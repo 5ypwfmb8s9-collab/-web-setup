@@ -24,6 +24,24 @@ hochladen, die Verarbeitung laeuft automatisch, am Ende steht die fertige
    Reihenfolge, Summen, Layout, Druckbereich). Schlaegt eine Pruefung fehl,
    wird keine Datei zum Download angeboten.
 
+## Planungsabgleich (optional)
+
+Zusaetzlich zu den Avis-Dateien kann optional eine Planungsdatei (mit dem
+Blatt "Planung für Staplerfahrer") hochgeladen werden. Dann wird die
+Ausgabedatei um zwei weitere Blaetter ergaenzt:
+
+- **"Planung für Staplerfahrer"**: 1:1-Kopie des Original-Blatts (Werte,
+  Formatierung, Spaltenbreiten, verbundene Zellen) - Spalte J ("LKW") wird
+  dabei anhand der Abladestelle (Spalte B "KAPI" = Abladestelle in den
+  Avis-Daten) neu befuellt. Abladestellen aus einer festen Ignorier-Liste
+  (KXG, BAU90, BAU50, CTCT, UPSOR, ACHG, PT02, da diese nie in Avis-Listen
+  vorkommen) werden dabei nicht angefasst.
+- **"Abweichungen"**: listet je Abladestelle Unterschiede zwischen den in
+  der Planung erwarteten und den tatsaechlichen VWPAL/111444-Mengen aus den
+  Avis-Daten (fehlende Palette, falscher Typ, abweichende Menge) sowie
+  Abladestellen, die nur in den Avis-Daten aber gar nicht in der Planung
+  vorkommen.
+
 ## Start
 
 ```bash

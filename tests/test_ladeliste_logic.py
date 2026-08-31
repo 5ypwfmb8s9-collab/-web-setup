@@ -260,3 +260,151 @@ def test_generate_workbook_gruppiert_nach_plan_vl_auch_wenn_lkw_vl_spalte_leer_i
     summary = result.summaries[0]
     assert summary.position_count == 2
     assert abs(summary.gesamtgewicht - 300) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Planungsabgleich ("Planung fuer Staplerfahrer" + "Abweichungen")
+# ---------------------------------------------------------------------------
+
+def _make_planung_workbook_bytes(data_rows):
+    """Baut eine minimale Planungsdatei mit dem Blatt "Planung fuer
+    Staplerfahrer" nach), Kopfzeile in Zeile 4, Daten ab Zeile 5, Spalten
+    B=KAPI, H=PALET SAYISI, I=PALET, J=LKW (wie im echten Format).
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = ll.PLANUNG_SHEET_NAME
+    ws.append([None] * 10)  # Zeile 1 leer
+    ws.append([None] * 10)  # Zeile 2
+    ws.append([None] * 10)  # Zeile 3
+    ws.append(["Werk", "KAPI", "MALZEME", "ADET", "KUTU ICI", "KLT SAYISI",
+                "NAKLIYE NR", "PALET SAYISI", "PALET", "LKW"])  # Zeile 4
+    for kapi, palet_sayisi, palet, lkw in data_rows:
+        row = [None] * 10
+        row[ll.PLANUNG_COL_KAPI - 1] = kapi
+        row[ll.PLANUNG_COL_PALET_SAYISI - 1] = palet_sayisi
+        row[ll.PLANUNG_COL_PALET - 1] = palet
+        row[ll.PLANUNG_COL_LKW - 1] = lkw
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def test_planung_befuellt_lkw_spalte_ueber_abladestelle_match():
+    avis_rows = [
+        _raw_row(plan_vl="CZ2A", pal="2*VWPAL", brutto=10, name="A"),
+    ]
+    # Abladestelle in _raw_row ist immer "Stelle" -> als KAPI in der Planung nutzen.
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("Stelle", 2, "VWPAL", None),  # LKW zunaechst leer, wie im echten Fall
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    ws = result.workbook[ll.PLANUNG_SHEET_NAME]
+    assert ws.cell(row=5, column=ll.PLANUNG_COL_LKW).value == "CZ2A"
+    assert result.planung.positions_gefuellt == 1
+    assert result.planung.positions_ohne_treffer == 0
+    assert result.planung.positions_ignoriert == 0
+
+
+def test_planung_ignoriert_bekannte_abladestellen_ohne_avis_bezug():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="1*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("BAU90", 1, "99C159", "AlteHandeintragung"),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    ws = result.workbook[ll.PLANUNG_SHEET_NAME]
+    # Ignorierte Abladestelle bleibt unangetastet (nicht ueberschrieben).
+    assert ws.cell(row=5, column=ll.PLANUNG_COL_LKW).value == "AlteHandeintragung"
+    assert result.planung.positions_ignoriert == 1
+    assert result.planung.positions_gefuellt == 0
+    # Ignorierte Abladestellen duerfen nicht in den Abweichungen auftauchen.
+    assert all(a.abladestelle != "BAU90" for a in result.planung.abweichungen)
+
+
+def test_planung_ohne_avis_treffer_bleibt_leer_und_wird_gemeldet():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="1*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("UnbekannteStelle", 3, "111444", "AlteHandeintragung"),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    ws = result.workbook[ll.PLANUNG_SHEET_NAME]
+    assert ws.cell(row=5, column=ll.PLANUNG_COL_LKW).value is None
+    assert result.planung.positions_ohne_treffer == 1
+    abweichung = next(a for a in result.planung.abweichungen if a.abladestelle == "UnbekannteStelle")
+    assert "fehlt komplett" in abweichung.beschreibung
+
+
+def test_planung_erkennt_falschen_typ():
+    # Planung erwartet VWPAL, Avis liefert stattdessen 111444 an derselben Abladestelle.
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="2*111444", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("Stelle", 2, "VWPAL", None),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    abweichung = next(a for a in result.planung.abweichungen if a.abladestelle == "Stelle")
+    assert "Falscher Typ" in abweichung.beschreibung
+
+
+def test_planung_erkennt_unerwartete_abladestelle_nur_in_avis():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="1*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    # Planungsdatei enthaelt die Abladestelle "Stelle" ueberhaupt nicht.
+    planung_file = _make_planung_workbook_bytes([
+        ("AndereStelle", 1, "VWPAL", "CZ2A"),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    abweichung = next(a for a in result.planung.abweichungen if a.abladestelle == "Stelle")
+    assert "Nicht in der Planung enthalten" in abweichung.beschreibung
+
+
+def test_planung_ohne_abweichung_wenn_mengen_uebereinstimmen():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="2*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("Stelle", 2, "VWPAL", None),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    assert result.planung.abweichungen == []
+
+
+def test_planung_blatt_erhaelt_format_und_zusatzblatt_wird_erzeugt():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="1*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([("Stelle", 1, "VWPAL", None)])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    assert ll.PLANUNG_SHEET_NAME in result.workbook.sheetnames
+    assert ll.ABWEICHUNGEN_SHEET_NAME in result.workbook.sheetnames
+    ws = result.workbook[ll.PLANUNG_SHEET_NAME]
+    # Kopfzeile (Zeile 4) bleibt unveraendert erhalten.
+    assert ws.cell(row=4, column=ll.PLANUNG_COL_KAPI).value == "KAPI"
+
+
+def test_generate_workbook_ohne_planungsdatei_hat_kein_planung_ergebnis():
+    avis_rows = [_raw_row(plan_vl="CZ2A", pal="1*VWPAL", brutto=10, name="A")]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+
+    result = ll.generate_workbook([avis_file])
+
+    assert result.planung is None
+    assert ll.PLANUNG_SHEET_NAME not in result.workbook.sheetnames
+    assert ll.ABWEICHUNGEN_SHEET_NAME not in result.workbook.sheetnames

@@ -16,8 +16,9 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import OrderedDict
-from dataclasses import dataclass
+from collections import Counter, OrderedDict
+from copy import copy
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -96,6 +97,26 @@ CONFIRMATION_TEXTS = [
 ]
 
 MAX_SHEET_NAME_LENGTH = 31
+
+# ---------------------------------------------------------------------------
+# Planungsabgleich (Planung fuer Staplerfahrer)
+# ---------------------------------------------------------------------------
+
+PLANUNG_SHEET_NAME = "Planung für Staplerfahrer"
+ABWEICHUNGEN_SHEET_NAME = "Abweichungen"
+
+# 1-basierte Spaltenindizes im Blatt "Planung fuer Staplerfahrer".
+PLANUNG_COL_KAPI = 2           # B - Abladestelle
+PLANUNG_COL_PALET_SAYISI = 8   # H - Menge
+PLANUNG_COL_PALET = 9          # I - Ladungstraeger-Art (VWPAL/111444/...)
+PLANUNG_COL_LKW = 10           # J - LKW-Kennzeichen (wird neu befuellt)
+PLANUNG_HEADER_ROW = 4
+PLANUNG_DATA_START_ROW = 5
+
+# Abladestellen, die grundsaetzlich nie in den Avis-Listen vorkommen und
+# daher beim Abgleich (Befuellen der LKW-Spalte und Abweichungspruefung)
+# uebersprungen werden.
+IGNORED_ABLADESTELLEN = {"KXG", "BAU90", "BAU50", "CTCT", "UPSOR", "ACHG", "PT02"}
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +782,279 @@ def validate(
 
 
 # ---------------------------------------------------------------------------
+# Schritt 4: Planungsabgleich (optional, nur wenn eine Planungsdatei
+# hochgeladen wurde)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AbweichungEntry:
+    abladestelle: str
+    erwartet_vwpal: int
+    erwartet_111444: int
+    tatsaechlich_vwpal: int
+    tatsaechlich_111444: int
+    beschreibung: str
+
+
+@dataclass
+class PlanungAbgleichResult:
+    positions_total: int = 0
+    positions_gefuellt: int = 0
+    positions_ignoriert: int = 0
+    positions_ohne_treffer: int = 0
+    ambiguous_abladestellen: Dict[str, List[str]] = field(default_factory=dict)
+    abweichungen: List[AbweichungEntry] = field(default_factory=list)
+
+
+def _normalize_palet_type(value: Any) -> Optional[str]:
+    """Normalisiert eine PALET-Angabe aus der Planung auf "VWPAL"/"111444"
+    oder None, falls es sich um eine andere Art handelt (z.B. "-", "99C159")
+    oder keine Angabe vorhanden ist.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if text == "VWPAL":
+        return "VWPAL"
+    if text == "111444":
+        return "111444"
+    return None
+
+
+def _clone_sheet_exact(source_ws: Worksheet, target_wb: Workbook, target_name: str) -> Worksheet:
+    """Kopiert ein komplettes Blatt 1:1 (Werte, Formatierung, Spaltenbreiten,
+    Zeilenhoehen, verbundene Zellen) in eine neue Arbeitsmappe.
+    """
+    target_ws = target_wb.create_sheet(target_name)
+
+    for col_letter, dim in source_ws.column_dimensions.items():
+        target_ws.column_dimensions[col_letter].width = dim.width
+        target_ws.column_dimensions[col_letter].hidden = dim.hidden
+
+    for row_idx, dim in source_ws.row_dimensions.items():
+        target_ws.row_dimensions[row_idx].height = dim.height
+
+    for row in source_ws.iter_rows():
+        for cell in row:
+            new_cell = target_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                new_cell.font = copy(cell.font)
+                new_cell.fill = copy(cell.fill)
+                new_cell.border = copy(cell.border)
+                new_cell.alignment = copy(cell.alignment)
+                new_cell.number_format = cell.number_format
+                new_cell.protection = copy(cell.protection)
+
+    for merged_range in source_ws.merged_cells.ranges:
+        target_ws.merge_cells(str(merged_range))
+
+    return target_ws
+
+
+def _build_abladestelle_plan_vl_map(
+    groups: "OrderedDict[str, List[TruckEntry]]",
+) -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+    """Ermittelt je Abladestelle den (haeufigsten) LKW aus den Avis-Daten.
+
+    Kommt eine Abladestelle bei mehreren unterschiedlichen LKW vor, wird der
+    haeufigste genommen und die Abladestelle zusaetzlich als mehrdeutig
+    vermerkt (informativ, kein Fehler).
+    """
+    counters: Dict[str, Counter] = {}
+    for plan_vl, entries in groups.items():
+        for entry in entries:
+            kapi = normalize_lkw(entry.abladestelle)
+            if kapi is None:
+                continue
+            counters.setdefault(kapi, Counter())[plan_vl] += 1
+
+    mapping: Dict[str, str] = {}
+    ambiguous: Dict[str, List[str]] = {}
+    for kapi, counter in counters.items():
+        mapping[kapi] = counter.most_common(1)[0][0]
+        if len(counter) > 1:
+            ambiguous[kapi] = sorted(counter.keys())
+    return mapping, ambiguous
+
+
+def _collect_avis_actual(groups: "OrderedDict[str, List[TruckEntry]]") -> Dict[str, Dict[str, int]]:
+    """Summiert je Abladestelle die tatsaechlichen VWPAL/111444-Mengen aus
+    den (bereits gefilterten) Avis-Daten - unabhaengig vom LKW.
+    """
+    actual: Dict[str, Dict[str, int]] = {}
+    for entries in groups.values():
+        for entry in entries:
+            kapi = normalize_lkw(entry.abladestelle)
+            if kapi is None:
+                continue
+            bucket = actual.setdefault(kapi, {"VWPAL": 0, "111444": 0})
+            bucket["VWPAL"] += _extract_qty(entry.pal, "VWPAL")
+            bucket["111444"] += _extract_qty(entry.pal, "111444")
+    return actual
+
+
+def _collect_planung_expected(source_ws: Worksheet) -> Dict[str, Dict[str, int]]:
+    """Summiert je Abladestelle die in der Planung erwarteten VWPAL/111444-
+    Mengen (andere PALET-Arten wie "-" oder "99C159" werden ignoriert).
+    """
+    expected: Dict[str, Dict[str, int]] = {}
+    for row_idx in range(PLANUNG_DATA_START_ROW, source_ws.max_row + 1):
+        kapi = normalize_lkw(source_ws.cell(row=row_idx, column=PLANUNG_COL_KAPI).value)
+        if kapi is None:
+            continue
+        palet_type = _normalize_palet_type(source_ws.cell(row=row_idx, column=PLANUNG_COL_PALET).value)
+        if palet_type is None:
+            continue
+        qty = to_number(source_ws.cell(row=row_idx, column=PLANUNG_COL_PALET_SAYISI).value) or 0
+        bucket = expected.setdefault(kapi, {"VWPAL": 0, "111444": 0})
+        bucket[palet_type] += qty
+    return expected
+
+
+def _describe_abweichung(exp: Dict[str, int], act: Dict[str, int]) -> str:
+    exp_v, exp_1 = exp["VWPAL"], exp["111444"]
+    act_v, act_1 = act["VWPAL"], act["111444"]
+
+    # Klassischer "falscher Typ"-Fall: eine Art fehlt komplett, dafuer ist
+    # (mindestens) die erwartete Menge der jeweils anderen Art vorhanden.
+    if exp_v > 0 and exp_1 == 0 and act_v == 0 and act_1 >= exp_v:
+        return f"Falscher Typ: {exp_v}*VWPAL erwartet, aber 111444 geliefert"
+    if exp_1 > 0 and exp_v == 0 and act_1 == 0 and act_v >= exp_1:
+        return f"Falscher Typ: {exp_1}*111444 erwartet, aber VWPAL geliefert"
+
+    parts = []
+    if exp_v != act_v:
+        if act_v == 0:
+            parts.append(f"VWPAL fehlt komplett (erwartet {exp_v})")
+        else:
+            parts.append(f"VWPAL: erwartet {exp_v}, tatsaechlich {act_v}")
+    if exp_1 != act_1:
+        if act_1 == 0:
+            parts.append(f"111444 fehlt komplett (erwartet {exp_1})")
+        else:
+            parts.append(f"111444: erwartet {exp_1}, tatsaechlich {act_1}")
+    return "; ".join(parts) if parts else "Abweichung"
+
+
+def _write_abweichungen_sheet(wb: Workbook, abweichungen: List[AbweichungEntry]) -> Worksheet:
+    ws = wb.create_sheet(ABWEICHUNGEN_SHEET_NAME)
+    headers = [
+        "Abladestelle",
+        "Erwartet VWPAL",
+        "Erwartet 111444",
+        "Tatsaechlich VWPAL",
+        "Tatsaechlich 111444",
+        "Abweichung",
+    ]
+    ws.append(headers)
+    header_font = Font(name="Calibri", size=11, bold=True, color=HEADER_FONT_COLOR)
+    header_fill = PatternFill(fill_type="solid", start_color=HEADER_FILL_COLOR, end_color=HEADER_FILL_COLOR)
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for entry in abweichungen:
+        ws.append([
+            entry.abladestelle,
+            entry.erwartet_vwpal,
+            entry.erwartet_111444,
+            entry.tatsaechlich_vwpal,
+            entry.tatsaechlich_111444,
+            entry.beschreibung,
+        ])
+
+    if not abweichungen:
+        ws.cell(row=2, column=1, value="Keine Abweichungen gefunden.")
+
+    widths = {"A": 20, "B": 16, "C": 16, "D": 18, "E": 18, "F": 55}
+    for col_letter, width in widths.items():
+        ws.column_dimensions[col_letter].width = width
+
+    return ws
+
+
+def add_planung_reconciliation(
+    wb: Workbook,
+    planung_file: Any,
+    groups: "OrderedDict[str, List[TruckEntry]]",
+) -> PlanungAbgleichResult:
+    """Liest das Blatt "Planung fuer Staplerfahrer" aus der hochgeladenen
+    Planungsdatei, kopiert es 1:1 in die Ausgabe-Arbeitsmappe, befuellt dort
+    Spalte J (LKW) anhand der Abladestelle-zu-LKW-Zuordnung aus den
+    Avis-Daten und erstellt ein Blatt "Abweichungen" mit allen Unterschieden
+    zwischen Planung und tatsaechlichen Avis-Mengen (in beide Richtungen).
+    """
+    source_wb = load_workbook(planung_file, data_only=True)
+    if PLANUNG_SHEET_NAME not in source_wb.sheetnames:
+        raise ValueError(
+            f"Das Blatt '{PLANUNG_SHEET_NAME}' wurde in der Planungsdatei nicht gefunden."
+        )
+    source_ws = source_wb[PLANUNG_SHEET_NAME]
+
+    target_ws = _clone_sheet_exact(source_ws, wb, PLANUNG_SHEET_NAME)
+
+    plan_vl_map, ambiguous = _build_abladestelle_plan_vl_map(groups)
+    avis_actual = _collect_avis_actual(groups)
+
+    result = PlanungAbgleichResult(ambiguous_abladestellen=ambiguous)
+    planung_abladestellen: set = set()
+
+    for row_idx in range(PLANUNG_DATA_START_ROW, source_ws.max_row + 1):
+        kapi = normalize_lkw(source_ws.cell(row=row_idx, column=PLANUNG_COL_KAPI).value)
+        if kapi is None:
+            continue
+        result.positions_total += 1
+        if kapi.upper() in IGNORED_ABLADESTELLEN:
+            result.positions_ignoriert += 1
+            continue
+        planung_abladestellen.add(kapi)
+        plan_vl = plan_vl_map.get(kapi)
+        if plan_vl is not None:
+            target_ws.cell(row=row_idx, column=PLANUNG_COL_LKW, value=plan_vl)
+            result.positions_gefuellt += 1
+        else:
+            target_ws.cell(row=row_idx, column=PLANUNG_COL_LKW).value = None
+            result.positions_ohne_treffer += 1
+
+    expected = _collect_planung_expected(source_ws)
+
+    # Richtung 1: Planung -> Avis (fehlende/falsche/abweichende Mengen).
+    for kapi, exp in expected.items():
+        if kapi.upper() in IGNORED_ABLADESTELLEN:
+            continue
+        act = avis_actual.get(kapi, {"VWPAL": 0, "111444": 0})
+        if exp["VWPAL"] == act["VWPAL"] and exp["111444"] == act["111444"]:
+            continue
+        result.abweichungen.append(AbweichungEntry(
+            abladestelle=kapi,
+            erwartet_vwpal=exp["VWPAL"],
+            erwartet_111444=exp["111444"],
+            tatsaechlich_vwpal=act["VWPAL"],
+            tatsaechlich_111444=act["111444"],
+            beschreibung=_describe_abweichung(exp, act),
+        ))
+
+    # Richtung 2: Avis -> Planung (Abladestellen, die es in den Avis-Daten
+    # gibt, aber gar nicht in der Planung vorkommen).
+    for kapi, act in avis_actual.items():
+        if kapi.upper() in IGNORED_ABLADESTELLEN or kapi in planung_abladestellen:
+            continue
+        result.abweichungen.append(AbweichungEntry(
+            abladestelle=kapi,
+            erwartet_vwpal=0,
+            erwartet_111444=0,
+            tatsaechlich_vwpal=act["VWPAL"],
+            tatsaechlich_111444=act["111444"],
+            beschreibung="Nicht in der Planung enthalten (nur in den Avis-Daten gefunden).",
+        ))
+
+    _write_abweichungen_sheet(wb, result.abweichungen)
+
+    source_wb.close()
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Gesamtablauf
 # ---------------------------------------------------------------------------
 
@@ -769,13 +1063,14 @@ class ProcessingResult:
     workbook: Workbook
     summaries: List[TruckSheetSummary]
     validation: List[ValidationResult]
+    planung: Optional[PlanungAbgleichResult] = None
 
     @property
     def is_valid(self) -> bool:
         return all(v.passed for v in self.validation)
 
 
-def generate_workbook(files: Sequence[Any]) -> ProcessingResult:
+def generate_workbook(files: Sequence[Any], planung_file: Any = None) -> ProcessingResult:
     header, rows = merge_source_files(files)
 
     wb = Workbook()
@@ -793,7 +1088,11 @@ def generate_workbook(files: Sequence[Any]) -> ProcessingResult:
 
     validation = validate(header, rows, groups, wb)
 
-    return ProcessingResult(workbook=wb, summaries=summaries, validation=validation)
+    planung_result = None
+    if planung_file is not None:
+        planung_result = add_planung_reconciliation(wb, planung_file, groups)
+
+    return ProcessingResult(workbook=wb, summaries=summaries, validation=validation, planung=planung_result)
 
 
 # ---------------------------------------------------------------------------
@@ -804,13 +1103,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Ladelisten-Tool (CLI)")
     parser.add_argument("inputs", nargs="+", help="Eine oder mehrere Excel-Quelldateien")
     parser.add_argument("-o", "--output", default="Ladelisten.xlsx", help="Pfad der Ausgabedatei")
+    parser.add_argument("--planung", default=None, help="Optionale Planungsdatei (Planung fuer Staplerfahrer)")
     args = parser.parse_args(argv)
 
-    result = generate_workbook(args.inputs)
+    result = generate_workbook(args.inputs, planung_file=args.planung)
 
     for s in result.summaries:
         print(f"{s.sheet_name}: {s.position_count} Positionen, "
               f"Gesamtgewicht={s.gesamtgewicht}, 111444={s.total_111444}, VWPAL={s.total_vwpal}")
+
+    if result.planung is not None:
+        p = result.planung
+        print(f"\nPlanungsabgleich: {p.positions_gefuellt} befuellt, "
+              f"{p.positions_ignoriert} ignoriert, {p.positions_ohne_treffer} ohne Treffer, "
+              f"{len(p.abweichungen)} Abweichung(en).")
 
     failed = [v for v in result.validation if not v.passed]
     for v in result.validation:
