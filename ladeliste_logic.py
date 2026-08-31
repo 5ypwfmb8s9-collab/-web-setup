@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 # ---------------------------------------------------------------------------
@@ -332,21 +333,30 @@ def _truck_sheet_name(plan_vl: str) -> str:
     return name
 
 
-def _pal_total_formula(token: str, first_row: int, last_row: int) -> str:
-    """Baut eine fehlerfreie SUMPRODUCT-Formel, die die Menge einer PAL-Art
-    (VWPAL oder 111444) aus dem sichtbaren Text in F<first_row>:F<last_row>
-    extrahiert - unabhaengig davon, ob die Art als erster oder zweiter
-    Eintrag im Zelltext auftritt, und ohne Fehlerwerte bei leeren/fehlenden
-    Zellen zu erzeugen.
+# Ausgeblendete Helferspalten (H, I) je LKW-Blatt: pro Datenzeile wird dort
+# die Menge 111444 bzw. VWPAL aus der jeweiligen F-Zelle extrahiert. Damit
+# bestehen die Summenformeln nur noch aus einem einfachen SUM() ueber diese
+# Spalten - die textauswertende Formel bezieht sich dabei je Zeile nur auf
+# eine einzelne Zelle (kein Bereich/Array-Kontext), was sie unabhaengig von
+# der jeweiligen Excel-Version garantiert fehlerfrei auswertbar macht.
+HELPER_COL_111444 = 8  # H
+HELPER_COL_VWPAL = 9   # I
+
+
+def _pal_qty_cell_formula(token: str, cell_ref: str) -> str:
+    """Baut eine einfache Formel, die die Menge einer PAL-Art (VWPAL oder
+    111444) aus EINER einzelnen Zelle extrahiert - unabhaengig davon, ob die
+    Art als erster oder zweiter Eintrag im Zelltext auftritt. Da sich die
+    Formel nur auf eine einzelne Zelle bezieht, ist sie ohne Array-Formel-
+    Eigenheiten (SUMPRODUCT-Trick) ueberall identisch auswertbar.
     """
-    rng = f"$F${first_row}:$F${last_row}"
     marker = f"*{token}"
-    prefix = f'LEFT({rng},FIND("{marker}",{rng})-1)'
+    prefix = f'LEFT({cell_ref},FIND("{marker}",{cell_ref})-1)'
     has_slash = f'ISNUMBER(SEARCH("/",{prefix}))'
     after_slash = f'TRIM(MID({prefix},SEARCH("/",{prefix})+1,100))'
     no_slash = f"TRIM({prefix})"
     value_expr = f"VALUE(IF({has_slash},{after_slash},{no_slash}))"
-    return f"=SUMPRODUCT(IFERROR({value_expr},0))"
+    return f"=IFERROR({value_expr},0)"
 
 
 def _style_header_row(ws: Worksheet) -> None:
@@ -414,7 +424,15 @@ def build_truck_sheet(wb: Workbook, plan_vl: str, entries: List[TruckEntry]) -> 
     first_data_row = 2
     last_data_row = first_data_row + len(entries) - 1
     for offset, entry in enumerate(entries):
-        _write_data_row(ws, first_data_row + offset, entry)
+        row_idx = first_data_row + offset
+        _write_data_row(ws, row_idx, entry)
+        ws.cell(row=row_idx, column=HELPER_COL_111444,
+                value=_pal_qty_cell_formula("111444", f"F{row_idx}"))
+        ws.cell(row=row_idx, column=HELPER_COL_VWPAL,
+                value=_pal_qty_cell_formula("VWPAL", f"F{row_idx}"))
+
+    ws.column_dimensions[get_column_letter(HELPER_COL_111444)].hidden = True
+    ws.column_dimensions[get_column_letter(HELPER_COL_VWPAL)].hidden = True
 
     _style_data_rows(ws, first_data_row, last_data_row)
 
@@ -441,9 +459,11 @@ def build_truck_sheet(wb: Workbook, plan_vl: str, entries: List[TruckEntry]) -> 
     c_value.number_format = WEIGHT_NUMBER_FORMAT
 
     # 111444
+    col_111444 = get_column_letter(HELPER_COL_111444)
+    col_vwpal = get_column_letter(HELPER_COL_VWPAL)
     e_label = ws.cell(row=row_111444, column=5, value="111444")
     e_label.font = regular_font
-    f_value = ws.cell(row=row_111444, column=6, value=_pal_total_formula("111444", first_data_row, n))
+    f_value = ws.cell(row=row_111444, column=6, value=f"=SUM({col_111444}{first_data_row}:{col_111444}{n})")
     f_value.font = regular_font
     f_value.alignment = right_align
     f_value.number_format = QUANTITY_NUMBER_FORMAT
@@ -451,7 +471,7 @@ def build_truck_sheet(wb: Workbook, plan_vl: str, entries: List[TruckEntry]) -> 
     # VWPAL
     e_label2 = ws.cell(row=row_vwpal, column=5, value="VWPAL")
     e_label2.font = regular_font
-    f_value2 = ws.cell(row=row_vwpal, column=6, value=_pal_total_formula("VWPAL", first_data_row, n))
+    f_value2 = ws.cell(row=row_vwpal, column=6, value=f"=SUM({col_vwpal}{first_data_row}:{col_vwpal}{n})")
     f_value2.font = regular_font
     f_value2.alignment = right_align
     f_value2.number_format = QUANTITY_NUMBER_FORMAT
@@ -671,20 +691,26 @@ def validate(
         "OK" if not formula_issues else f"Probleme bei: {', '.join(formula_issues)}",
     ))
 
-    # 9: nur A:G, Spaltenbreiten korrekt
+    # 9: A:G sichtbar und korrekt formatiert; zusaetzliche Spalten (Helfer-
+    # spalten fuer die PAL-Summenformeln) muessen ausgeblendet sein.
     layout_issues = []
     for plan_vl in groups.keys():
         sheet_name = _truck_sheet_name(plan_vl)
         ws = wb[sheet_name]
-        if ws.max_column != 7:
-            layout_issues.append(sheet_name)
-            continue
-        for col_letter, pt in COLUMN_WIDTHS_PT.items():
-            expected = pt_to_excel_width(pt)
-            actual = ws.column_dimensions[col_letter].width
-            if actual is None or abs(actual - expected) > 0.05:
-                layout_issues.append(sheet_name)
+        problem = ws.max_column < 7
+        for col_idx in range(8, ws.max_column + 1):
+            if not ws.column_dimensions[get_column_letter(col_idx)].hidden:
+                problem = True
                 break
+        if not problem:
+            for col_letter, pt in COLUMN_WIDTHS_PT.items():
+                expected = pt_to_excel_width(pt)
+                actual = ws.column_dimensions[col_letter].width
+                if actual is None or abs(actual - expected) > 0.05:
+                    problem = True
+                    break
+        if problem:
+            layout_issues.append(sheet_name)
     results.append(ValidationResult(
         "Nur Spalten A:G, Spaltenbreiten korrekt",
         not layout_issues,
