@@ -31,24 +31,36 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 SOURCE_SHEET_NAME = "Avis Lade Listen"
 
-# 0-basierte Spaltenindizes im Quellblatt (A=0, B=1, ...)
-COL_ABHOLTAG = 3    # D
-COL_EMPF_NAME = 6   # G
-COL_EMPF_ORT = 7    # H
-COL_ABLADESTELLE = 8  # I
-COL_LKW_VL = 11     # L
-COL_PAL_QUELLE = 13  # N
-COL_BRUTTO = 14     # O
+# 0-basierte Spaltenindizes in den ROHEN Quelldateien (A=0, B=1, ...), wie sie
+# hochgeladen werden. "Plan VL" (Spalte K) ist die LKW-Kennung - Spalte L
+# "LKW VL" ist in der Praxis oft leer und darf NICHT verwendet werden.
+RAW_COL_ABHOLTAG = 3      # D
+RAW_COL_EMPF_NAME = 6     # G
+RAW_COL_EMPF_ORT = 7      # H
+RAW_COL_ABLADESTELLE = 8  # I
+RAW_COL_PLAN_VL = 10      # K ("Plan VL")
+RAW_COL_PAL_QUELLE = 13   # N
+RAW_COL_BRUTTO = 14       # O
 
+# Feste 7 Kernspalten, sowohl im zusammengefuehrten "Avis Lade Listen"-Blatt
+# als auch in jedem LKW-Blatt (0-basierte Indizes innerhalb dieser Spaltenliste).
 TRUCK_SHEET_HEADERS = [
     "Abholtag",
     "Empfaenger Name",
     "Empfaenger Ort",
     "Abladestelle",
-    "LKW VL",
+    "Plan VL",
     "PAL",
     "Brutto",
 ]
+
+COL_ABHOLTAG = 0
+COL_EMPF_NAME = 1
+COL_EMPF_ORT = 2
+COL_ABLADESTELLE = 3
+COL_PLAN_VL = 4
+COL_PAL_QUELLE = 5
+COL_BRUTTO = 6
 
 PAL_TOKENS = ("VWPAL", "111444")
 
@@ -189,13 +201,20 @@ def process_pal(text: Any) -> str:
 # Schritt 1: Einlesen & Zusammenfuehren
 # ---------------------------------------------------------------------------
 
-def read_source_rows(file: Any, sheet_name: str = SOURCE_SHEET_NAME) -> Tuple[List[Any], List[List[Any]]]:
-    """Liest Kopfzeile und Datenzeilen aus dem angegebenen Blatt einer Datei.
+def _get(row: Sequence[Any], idx: int) -> Any:
+    return row[idx] if idx < len(row) else None
+
+
+def read_source_rows(file: Any, sheet_name: str = SOURCE_SHEET_NAME) -> List[List[Any]]:
+    """Liest Datenzeilen aus dem angegebenen Blatt einer Rohdatei und bildet sie
+    direkt auf die 7 Kernspalten ab (Abholtag, Empfaenger Name, Empfaenger Ort,
+    Abladestelle, Plan VL, PAL, Brutto). Die PAL-Spalte bleibt dabei unbearbeitet
+    (roher Text aus Spalte N).
 
     `file` kann ein Pfad, ein Datei-Objekt oder ein BytesIO sein (alles, was
     openpyxl.load_workbook akzeptiert).
     """
-    wb = load_workbook(file, data_only=True, read_only=True)
+    wb = load_workbook(file, data_only=True)
     if sheet_name not in wb.sheetnames:
         raise ValueError(
             f"Das Blatt '{sheet_name}' wurde in der Datei nicht gefunden."
@@ -203,21 +222,32 @@ def read_source_rows(file: Any, sheet_name: str = SOURCE_SHEET_NAME) -> Tuple[Li
     ws = wb[sheet_name]
     rows_iter = ws.iter_rows(values_only=True)
     try:
-        header = list(next(rows_iter))
+        next(rows_iter)  # Kopfzeile der Rohdatei ueberspringen
     except StopIteration:
-        return [], []
+        wb.close()
+        return []
 
     data: List[List[Any]] = []
     for row in rows_iter:
         if all(v is None for v in row):
             continue
-        data.append(list(row))
+        mapped = [
+            _get(row, RAW_COL_ABHOLTAG),
+            _get(row, RAW_COL_EMPF_NAME),
+            _get(row, RAW_COL_EMPF_ORT),
+            _get(row, RAW_COL_ABLADESTELLE),
+            _get(row, RAW_COL_PLAN_VL),
+            _get(row, RAW_COL_PAL_QUELLE),
+            _get(row, RAW_COL_BRUTTO),
+        ]
+        data.append(mapped)
     wb.close()
-    return header, data
+    return data
 
 
 def merge_source_files(files: Sequence[Any]) -> Tuple[List[Any], List[List[Any]]]:
-    """Fuehrt Kopfzeile und Datenzeilen mehrerer Quelldateien zusammen.
+    """Fuehrt die Datenzeilen mehrerer Quelldateien zusammen (bereits auf die 7
+    Kernspalten abgebildet).
 
     Reihenfolge: alle Zeilen der ersten Datei zuerst (Originalreihenfolge),
     danach die der naechsten usw. Keine Sortierung/Deduplizierung/Gruppierung.
@@ -225,15 +255,11 @@ def merge_source_files(files: Sequence[Any]) -> Tuple[List[Any], List[List[Any]]
     if not files:
         raise ValueError("Es wurde keine Quelldatei uebergeben.")
 
-    combined_header: Optional[List[Any]] = None
     combined_rows: List[List[Any]] = []
     for f in files:
-        header, rows = read_source_rows(f)
-        if combined_header is None:
-            combined_header = header
-        combined_rows.extend(rows)
+        combined_rows.extend(read_source_rows(f))
 
-    return combined_header or [], combined_rows
+    return list(TRUCK_SHEET_HEADERS), combined_rows
 
 
 def write_source_sheet(wb: Workbook, header: Sequence[Any], rows: Sequence[Sequence[Any]]) -> Worksheet:
@@ -256,7 +282,7 @@ class TruckEntry:
     empf_name: Any
     empf_ort: Any
     abladestelle: Any
-    lkw_vl: str
+    plan_vl: str
     pal: str
     brutto: Optional[float]
     pal_raw: Any
@@ -265,43 +291,42 @@ class TruckEntry:
 @dataclass
 class TruckSheetSummary:
     sheet_name: str
-    lkw_vl: str
+    plan_vl: str
     position_count: int
     gesamtgewicht: float
     total_111444: int
     total_vwpal: int
 
 
-def _get(row: Sequence[Any], idx: int) -> Any:
-    return row[idx] if idx < len(row) else None
-
-
 def build_truck_groups(rows: Sequence[Sequence[Any]]) -> "OrderedDict[str, List[TruckEntry]]":
-    """Gruppiert Quellzeilen nach Spalte L (LKW VL), Zeilen mit leerer Spalte L
-    werden ignoriert. Reihenfolge der Zeilen je Gruppe = Reihenfolge im Quellblatt.
-    Reihenfolge der Gruppen = Reihenfolge des ersten Auftretens im Quellblatt.
+    """Gruppiert Zeilen nach Spalte "Plan VL", Zeilen mit leerem Plan VL werden
+    ignoriert. Der Wert wird unveraendert (inkl. eines eventuellen "-N"-Zusatzes
+    wie "BOHDT978-2") als eigenstaendige Kennung verwendet - kein Abschneiden
+    von Suffixen, jede Auspraegung bekommt ihr eigenes Blatt. Reihenfolge der
+    Zeilen je Gruppe = Reihenfolge im Quellblatt. Reihenfolge der Gruppen =
+    Reihenfolge des ersten Auftretens im Quellblatt.
     """
     groups: "OrderedDict[str, List[TruckEntry]]" = OrderedDict()
     for row in rows:
-        lkw = normalize_lkw(_get(row, COL_LKW_VL))
-        if lkw is None:
+        plan_vl = normalize_lkw(_get(row, COL_PLAN_VL))
+        if plan_vl is None:
             continue
         entry = TruckEntry(
             abholtag=to_date(_get(row, COL_ABHOLTAG)),
             empf_name=_get(row, COL_EMPF_NAME),
             empf_ort=_get(row, COL_EMPF_ORT),
             abladestelle=_get(row, COL_ABLADESTELLE),
-            lkw_vl=lkw,
+            plan_vl=plan_vl,
             pal=process_pal(_get(row, COL_PAL_QUELLE)),
             brutto=to_number(_get(row, COL_BRUTTO)),
             pal_raw=_get(row, COL_PAL_QUELLE),
         )
-        groups.setdefault(lkw, []).append(entry)
+        groups.setdefault(plan_vl, []).append(entry)
     return groups
 
 
-def _truck_sheet_name(lkw_vl: str) -> str:
-    name = f"LKW {lkw_vl}"
+def _truck_sheet_name(plan_vl: str) -> str:
+    name = f"LKW {plan_vl}"
     if len(name) > MAX_SHEET_NAME_LENGTH:
         name = name[:MAX_SHEET_NAME_LENGTH]
     return name
@@ -370,7 +395,7 @@ def _write_data_row(ws: Worksheet, row_idx: int, entry: TruckEntry) -> None:
     ws.cell(row=row_idx, column=2, value=entry.empf_name)
     ws.cell(row=row_idx, column=3, value=entry.empf_ort)
     ws.cell(row=row_idx, column=4, value=entry.abladestelle)
-    ws.cell(row=row_idx, column=5, value=entry.lkw_vl)
+    ws.cell(row=row_idx, column=5, value=entry.plan_vl)
     ws.cell(row=row_idx, column=6, value=entry.pal if entry.pal else None)
     ws.cell(row=row_idx, column=7, value=entry.brutto)
 
@@ -378,8 +403,8 @@ def _write_data_row(ws: Worksheet, row_idx: int, entry: TruckEntry) -> None:
     ws.cell(row=row_idx, column=7).number_format = WEIGHT_NUMBER_FORMAT
 
 
-def build_truck_sheet(wb: Workbook, lkw_vl: str, entries: List[TruckEntry]) -> Tuple[Worksheet, TruckSheetSummary]:
-    sheet_name = _truck_sheet_name(lkw_vl)
+def build_truck_sheet(wb: Workbook, plan_vl: str, entries: List[TruckEntry]) -> Tuple[Worksheet, TruckSheetSummary]:
+    sheet_name = _truck_sheet_name(plan_vl)
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
     ws = wb.create_sheet(sheet_name)
@@ -477,7 +502,7 @@ def build_truck_sheet(wb: Workbook, lkw_vl: str, entries: List[TruckEntry]) -> T
 
     summary = TruckSheetSummary(
         sheet_name=sheet_name,
-        lkw_vl=lkw_vl,
+        plan_vl=plan_vl,
         position_count=len(entries),
         gesamtgewicht=sum((e.brutto or 0) for e in entries),
         total_111444=sum(_extract_qty(e.pal, "111444") for e in entries),
@@ -538,27 +563,27 @@ def validate(
 ) -> List[ValidationResult]:
     results: List[ValidationResult] = []
 
-    # 1 + 4: jede Zeile mit gefuellter Spalte L ist genau einem LKW-Blatt
+    # 1 + 4: jede Zeile mit gefuelltem Plan VL ist genau einem LKW-Blatt
     # zugeordnet, Positionsanzahl je LKW stimmt.
     expected_counts: Dict[str, int] = OrderedDict()
     total_considered = 0
     for row in rows:
-        lkw = normalize_lkw(_get(row, COL_LKW_VL))
-        if lkw is None:
+        plan_vl = normalize_lkw(_get(row, COL_PLAN_VL))
+        if plan_vl is None:
             continue
         total_considered += 1
-        expected_counts[lkw] = expected_counts.get(lkw, 0) + 1
+        expected_counts[plan_vl] = expected_counts.get(plan_vl, 0) + 1
 
     assigned_total = sum(len(v) for v in groups.values())
     results.append(ValidationResult(
         "Zeilenzuordnung vollstaendig",
         assigned_total == total_considered,
-        f"{assigned_total} von {total_considered} Zeilen mit LKW VL zugeordnet.",
+        f"{assigned_total} von {total_considered} Zeilen mit Plan VL zugeordnet.",
     ))
 
     count_mismatches = [
-        lkw for lkw, count in expected_counts.items()
-        if count != len(groups.get(lkw, []))
+        plan_vl for plan_vl, count in expected_counts.items()
+        if count != len(groups.get(plan_vl, []))
     ]
     results.append(ValidationResult(
         "Positionsanzahl je LKW korrekt",
@@ -567,7 +592,7 @@ def validate(
     ))
 
     # 2: kein LKW-Blatt doppelt
-    truck_sheet_names = [_truck_sheet_name(lkw) for lkw in groups.keys()]
+    truck_sheet_names = [_truck_sheet_name(plan_vl) for plan_vl in groups.keys()]
     duplicates = [n for n in set(truck_sheet_names) if truck_sheet_names.count(n) > 1]
     results.append(ValidationResult(
         "Keine doppelten LKW-Blaetter",
@@ -577,11 +602,11 @@ def validate(
 
     # 3: Reihenfolge entspricht dem Quellblatt
     order_ok = True
-    for lkw, entries in groups.items():
+    for plan_vl, entries in groups.items():
         source_order = [
-            normalize_lkw(_get(row, COL_LKW_VL)) == lkw
+            normalize_lkw(_get(row, COL_PLAN_VL)) == plan_vl
             for row in rows
-            if normalize_lkw(_get(row, COL_LKW_VL)) == lkw
+            if normalize_lkw(_get(row, COL_PLAN_VL)) == plan_vl
         ]
         if len(source_order) != len(entries):
             order_ok = False
@@ -593,12 +618,12 @@ def validate(
 
     # 5: Gesamtgewicht = exakte Summe aus Spalte O
     weight_mismatches = []
-    for lkw, entries in groups.items():
+    for plan_vl, entries in groups.items():
         expected_sum = sum((to_number(_get(row, COL_BRUTTO)) or 0)
-                            for row in rows if normalize_lkw(_get(row, COL_LKW_VL)) == lkw)
+                            for row in rows if normalize_lkw(_get(row, COL_PLAN_VL)) == plan_vl)
         actual_sum = sum((e.brutto or 0) for e in entries)
         if abs(expected_sum - actual_sum) > 1e-9:
-            weight_mismatches.append(lkw)
+            weight_mismatches.append(plan_vl)
     results.append(ValidationResult(
         "Gesamtgewicht stimmt mit Quelle ueberein",
         not weight_mismatches,
@@ -608,15 +633,15 @@ def validate(
     # 6 + 7: 111444/VWPAL-Mengen stimmen, andere Ladungstraeger nicht enthalten
     pal_mismatches = []
     other_carriers_found = []
-    for lkw, entries in groups.items():
+    for plan_vl, entries in groups.items():
         for entry in entries:
             expected_pal = process_pal(entry.pal_raw)
             if expected_pal != entry.pal:
-                pal_mismatches.append(lkw)
+                pal_mismatches.append(plan_vl)
             if entry.pal:
                 for token in re.findall(r"\*([A-Za-z0-9]+)", entry.pal):
                     if token.upper() not in PAL_TOKENS:
-                        other_carriers_found.append(lkw)
+                        other_carriers_found.append(plan_vl)
     results.append(ValidationResult(
         "PAL-Mengen (111444/VWPAL) korrekt extrahiert",
         not pal_mismatches,
@@ -630,10 +655,10 @@ def validate(
 
     # 8: alle Summenzeilen sind Formeln, keine Fehlerwerte
     formula_issues = []
-    for lkw in groups.keys():
-        sheet_name = _truck_sheet_name(lkw)
+    for plan_vl in groups.keys():
+        sheet_name = _truck_sheet_name(plan_vl)
         ws = wb[sheet_name]
-        n = 1 + len(groups[lkw])
+        n = 1 + len(groups[plan_vl])
         for row, col in ((n + 1, 7), (n + 2, 6), (n + 3, 6), (n + 4, 6)):
             cell = ws.cell(row=row, column=col)
             if not (isinstance(cell.value, str) and cell.value.startswith("=")):
@@ -648,8 +673,8 @@ def validate(
 
     # 9: nur A:G, Spaltenbreiten korrekt
     layout_issues = []
-    for lkw in groups.keys():
-        sheet_name = _truck_sheet_name(lkw)
+    for plan_vl in groups.keys():
+        sheet_name = _truck_sheet_name(plan_vl)
         ws = wb[sheet_name]
         if ws.max_column != 7:
             layout_issues.append(sheet_name)
@@ -668,8 +693,8 @@ def validate(
 
     # 10: Bestaetigungstexte nur ueber A:G verbunden
     merge_issues = []
-    for lkw in groups.keys():
-        sheet_name = _truck_sheet_name(lkw)
+    for plan_vl in groups.keys():
+        sheet_name = _truck_sheet_name(plan_vl)
         ws = wb[sheet_name]
         merges = list(ws.merged_cells.ranges)
         if len(merges) != 3:
@@ -687,8 +712,8 @@ def validate(
 
     # 11: Druckbereich endet exakt in Unterschriftenzeile, passt auf eine Seite
     print_issues = []
-    for lkw, entries in groups.items():
-        sheet_name = _truck_sheet_name(lkw)
+    for plan_vl, entries in groups.items():
+        sheet_name = _truck_sheet_name(plan_vl)
         ws = wb[sheet_name]
         n = 1 + len(entries)
         expected_signature_row = n + 12
@@ -736,8 +761,8 @@ def generate_workbook(files: Sequence[Any]) -> ProcessingResult:
     groups = build_truck_groups(rows)
 
     summaries: List[TruckSheetSummary] = []
-    for lkw_vl, entries in groups.items():
-        _, summary = build_truck_sheet(wb, lkw_vl, entries)
+    for plan_vl, entries in groups.items():
+        _, summary = build_truck_sheet(wb, plan_vl, entries)
         summaries.append(summary)
 
     validation = validate(header, rows, groups, wb)

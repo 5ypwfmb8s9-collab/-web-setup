@@ -9,12 +9,17 @@ hochladen, die Verarbeitung laeuft automatisch, am Ende steht die fertige
 1. Eine oder mehrere Excel-Dateien mit dem Blatt **"Avis Lade Listen"**
    hochladen (Zeile 1 = Ueberschriften, Daten ab Zeile 2, identische
    Spaltenstruktur in allen Dateien).
-2. Alle Dateien werden zu einem gemeinsamen Datensatz zusammengefuehrt
-   (Reihenfolge bleibt erhalten, keine Sortierung/Deduplizierung) und
-   unveraendert als Blatt "Avis Lade Listen" in die Ausgabe geschrieben.
-3. Fuer jeden eindeutigen Wert in Spalte L ("LKW VL") wird ein eigenes
+2. Alle Dateien werden auf die 7 Kernspalten (Abholtag, Empfaenger Name,
+   Empfaenger Ort, Abladestelle, Plan VL, PAL, Brutto) abgebildet und zu
+   einem gemeinsamen Datensatz zusammengefuehrt (Reihenfolge bleibt
+   erhalten, keine Sortierung/Deduplizierung, PAL-Spalte bleibt roh/
+   unbearbeitet) und als Blatt "Avis Lade Listen" in die Ausgabe geschrieben.
+3. Fuer jeden eindeutigen Wert in Spalte K ("Plan VL") wird ein eigenes
    Blatt "LKW &lt;Wert&gt;" mit den zugehoerigen Positionen, Summenformeln,
    Bestaetigungs- und Unterschriftsbereich sowie Druckeinstellungen erzeugt.
+   Ein Zusatz wie "-2" (z.B. "BOHDT978-2") gilt als eigenstaendige Kennung
+   und bekommt ein eigenes Blatt. Spalte L ("LKW VL") wird bewusst NICHT
+   verwendet, da sie in echten Exporten haeufig leer ist.
 4. Automatisierte Validierungen pruefen das Ergebnis (Zuordnung,
    Reihenfolge, Summen, Layout, Druckbereich). Schlaegt eine Pruefung fehl,
    wird keine Datei zum Download angeboten.
