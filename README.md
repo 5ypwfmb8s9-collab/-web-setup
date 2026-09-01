@@ -1,8 +1,13 @@
-# Ladelisten-Tool
+# VW AI
 
-Automatisiertes Tool zur Verarbeitung von Excel-Ladelisten: Datei(en)
-hochladen, die Verarbeitung laeuft automatisch, am Ende steht die fertige
-`.xlsx`-Datei zum Download bereit.
+Werkzeugsammlung mit mehreren Reitern: **Ladelisten** (automatisierte
+Verarbeitung von Excel-Ladelisten) und **Reklamationen**
+(Ausfallfracht-Dashboard). Weitere Werkzeuge folgen.
+
+## Reiter: Ladelisten
+
+Datei(en) hochladen, die Verarbeitung laeuft automatisch, am Ende steht
+die fertige `.xlsx`-Datei zum Download bereit.
 
 ## Ablauf
 
@@ -42,6 +47,17 @@ Ausgabedatei um zwei weitere Blaetter ergaenzt:
   Abladestellen, die nur in den Avis-Daten aber gar nicht in der Planung
   vorkommen.
 
+## Reiter: Reklamationen (Ausfallfracht)
+
+Zeigt Ausfallfracht-PDFs von Duvenbeck als Dashboard: Absender, Betreff,
+Empfangsdatum, Link zur PDF und ein je Zeile aenderbarer Status (Offen /
+In Bearbeitung / Erledigt). Die Daten kommen ueber zwei
+Power-Automate-Flows aus einer SharePoint-Liste, die per E-Mail-Trigger
+automatisch befuellt wird - siehe **[REKLAMATIONEN_SETUP.md](REKLAMATIONEN_SETUP.md)**
+fuer die vollstaendige Einrichtung (Flows, SharePoint-Liste,
+`secrets.toml`). Ohne diese Einrichtung zeigt der Reiter einen Hinweis
+statt eines Fehlers.
+
 ## Start
 
 ```bash
@@ -72,13 +88,23 @@ pytest
 
 Die Tests decken die PAL-Erkennung (inkl. Sonderfaelle wie unterschiedliche
 Abstaende, Gross-/Kleinschreibung, mehrfaches Vorkommen, aehnliche aber
-andere Ladungstraeger) sowie das Zusammenfuehren mehrerer Quelldateien ab.
+andere Ladungstraeger), das Zusammenfuehren mehrerer Quelldateien sowie
+den Abruf/Status-Update der Ausfallfracht-Reklamationen (mit
+simulierten HTTP-Antworten, ohne echte Power-Automate-Verbindung) ab.
 
 ## Dateien
 
-- `app.py` – Streamlit-Oberflaeche (Upload, automatische Verarbeitung,
-  Zusammenfassung, Validierung, Download).
-- `ladeliste_logic.py` – reine Verarbeitungslogik (Zusammenfuehren,
-  LKW-Blaetter erzeugen, Validierung), UI-unabhaengig und per CLI nutzbar.
-- `tests/test_ladeliste_logic.py` – pytest-Tests.
+- `app.py` – Streamlit-Oberflaeche (Start-Seite + Reiter Ladelisten und
+  Reklamationen).
+- `ladeliste_logic.py` – reine Verarbeitungslogik fuer Ladelisten
+  (Zusammenfuehren, LKW-Blaetter erzeugen, Validierung), UI-unabhaengig
+  und per CLI nutzbar.
+- `reklamation_logic.py` – Abruf/Status-Update der Ausfallfracht-
+  Reklamationen ueber die Power-Automate-Flows, UI-unabhaengig.
+- `REKLAMATIONEN_SETUP.md` – Einrichtung der Power-Automate-Flows +
+  SharePoint fuer den Reklamationen-Reiter.
+- `tests/test_ladeliste_logic.py`, `tests/test_reklamation_logic.py` –
+  pytest-Tests.
 - `requirements.txt` – Python-Abhaengigkeiten.
+- `.streamlit/secrets.toml.example` – Vorlage fuer die (nicht
+  eingecheckte) `secrets.toml` mit den Flow-URLs.

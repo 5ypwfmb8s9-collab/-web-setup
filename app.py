@@ -1,17 +1,25 @@
 """VW AI - Streamlit-Oberflaeche.
 
-Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge. "Ladelisten" ist
-das erste Werkzeug (automatische Verarbeitung von Excel-Ladelisten),
-"Reklamationen" folgt als naechstes.
+Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
+(automatische Verarbeitung von Excel-Ladelisten) und "Reklamationen"
+(Ausfallfracht-Dashboard ueber Power Automate + SharePoint).
 """
 
 import io
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
 from ladeliste_logic import generate_workbook
+from reklamation_logic import (
+    STATUS_OPTIONS,
+    ReklamationenError,
+    fetch_reklamationen,
+    get_configured_urls,
+    update_status,
+)
 
 st.set_page_config(page_title="VW AI", page_icon="✨", layout="wide")
 
@@ -276,10 +284,97 @@ def render_ladelisten_tab() -> None:
 def render_reklamationen_tab() -> None:
     st.title("Reklamationen")
     st.markdown(
-        '<span class="vwai-badge">✨ In Vorbereitung</span>',
+        '<span class="vwai-badge">✨ Ausfallfracht-Dashboard</span>',
         unsafe_allow_html=True,
     )
-    st.info("Diese Funktion folgt als Naechstes.")
+    st.write(
+        "Ausfallfracht-PDFs (Absender Duvenbeck), die per Power-Automate-Flow "
+        "aus dem gemeinsamen Postfach in SharePoint erfasst wurden."
+    )
+
+    urls = get_configured_urls(st.secrets)
+    if urls is None:
+        st.info(
+            "Noch nicht eingerichtet: Es fehlt `.streamlit/secrets.toml` mit "
+            "`list_url`/`update_url`. Siehe **REKLAMATIONEN_SETUP.md** fuer die "
+            "Schritt-fuer-Schritt-Anleitung (Power-Automate-Flows + Secrets)."
+        )
+        return
+
+    refresh_clicked = st.button("Aktualisieren", key="reklamationen_refresh")
+    if refresh_clicked or "reklamationen_data" not in st.session_state:
+        with st.spinner("Lade Reklamationen..."):
+            try:
+                entries = fetch_reklamationen(urls["list_url"])
+            except ReklamationenError as exc:
+                st.error(f"Abruf fehlgeschlagen: {exc}")
+                return
+        st.session_state["reklamationen_data"] = [vars(e) for e in entries]
+        st.session_state["reklamationen_original"] = {
+            e.id: e.status for e in entries
+        }
+
+    data = st.session_state["reklamationen_data"]
+    if not data:
+        st.success("Keine offenen Ausfallfracht-Reklamationen erfasst.")
+        return
+
+    df = pd.DataFrame(data)
+
+    counts = df["status"].value_counts()
+    cols = st.columns(len(STATUS_OPTIONS))
+    for col, status in zip(cols, STATUS_OPTIONS):
+        col.metric(status, int(counts.get(status, 0)))
+
+    edited_df = st.data_editor(
+        df,
+        key="reklamationen_editor",
+        num_rows="fixed",
+        hide_index=True,
+        column_order=[
+            "absender",
+            "betreff",
+            "empfangsdatum",
+            "dateiname",
+            "dateilink",
+            "status",
+        ],
+        column_config={
+            "id": None,
+            "absender": st.column_config.TextColumn("Absender", disabled=True),
+            "betreff": st.column_config.TextColumn("Betreff", disabled=True),
+            "empfangsdatum": st.column_config.TextColumn(
+                "Empfangsdatum", disabled=True
+            ),
+            "dateiname": st.column_config.TextColumn("Dateiname", disabled=True),
+            "dateilink": st.column_config.LinkColumn("PDF", display_text="Oeffnen"),
+            "status": st.column_config.SelectboxColumn(
+                "Status", options=STATUS_OPTIONS, required=True
+            ),
+        },
+    )
+
+    if st.button("Status speichern", key="reklamationen_save"):
+        original = st.session_state["reklamationen_original"]
+        errors = []
+        saved = 0
+        for _, row in edited_df.iterrows():
+            if original.get(row["id"]) != row["status"]:
+                try:
+                    update_status(urls["update_url"], row["id"], row["status"])
+                    original[row["id"]] = row["status"]
+                    saved += 1
+                except ReklamationenError as exc:
+                    errors.append(f"{row['betreff']}: {exc}")
+
+        if saved:
+            st.session_state["reklamationen_data"] = edited_df.to_dict("records")
+            st.success(
+                f"{saved} Status-Aenderung(en) gespeichert. "
+                "Die Zaehler oben aktualisieren sich beim naechsten Klick."
+            )
+        if errors:
+            st.error("Fehler beim Speichern:\n" + "\n".join(errors))
 
 
 tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
