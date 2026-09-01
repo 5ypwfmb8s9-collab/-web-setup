@@ -15,6 +15,7 @@ import streamlit.components.v1 as components
 from ladeliste_logic import generate_workbook
 from reklamation_logic import (
     STATUS_OPTIONS,
+    TYP_STORNO,
     ReklamationenError,
     fetch_reklamationen,
     get_configured_urls,
@@ -322,9 +323,11 @@ def render_reklamationen_tab() -> None:
     df = pd.DataFrame(data)
 
     counts = df["status"].value_counts()
-    cols = st.columns(len(STATUS_OPTIONS))
+    metric_labels = STATUS_OPTIONS + ["Storno"]
+    cols = st.columns(len(metric_labels))
     for col, status in zip(cols, STATUS_OPTIONS):
         col.metric(status, int(counts.get(status, 0)))
+    cols[-1].metric("Storno", int((df["typ"] == TYP_STORNO).sum()))
 
     edited_df = st.data_editor(
         df,
@@ -332,6 +335,7 @@ def render_reklamationen_tab() -> None:
         num_rows="fixed",
         hide_index=True,
         column_order=[
+            "typ",
             "absender",
             "betreff",
             "empfangsdatum",
@@ -341,6 +345,7 @@ def render_reklamationen_tab() -> None:
         ],
         column_config={
             "id": None,
+            "typ": st.column_config.TextColumn("Typ", disabled=True),
             "absender": st.column_config.TextColumn("Absender", disabled=True),
             "betreff": st.column_config.TextColumn("Betreff", disabled=True),
             "empfangsdatum": st.column_config.TextColumn(

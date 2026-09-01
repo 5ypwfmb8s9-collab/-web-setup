@@ -1,10 +1,14 @@
 """Ausfallfracht-Reklamationen: Abruf und Status-Pflege ueber Power Automate.
 
-Die eigentlichen Daten liegen in einer SharePoint-Liste, die ein Power-
-Automate-Flow aus eingehenden Ausfallfracht-PDFs (Absender Duvenbeck)
-befuellt. Dieses Modul spricht NICHT direkt mit SharePoint/Graph, sondern
-mit zwei HTTP-getriggerten Flows, die die dafuer noetigen, bereits im
-Tenant freigegebenen Connectors verwenden:
+Die eigentlichen Daten liegen in einer SharePoint-Liste, die zwei Power-
+Automate-Flows befuellen: Ausfallfracht-Rechnungen (Absender
+noreply@duvenbeck.de, Betreff "Rechnung Ausfallfracht zu Frachtbrief")
+und Storno-PDFs dazu (Absender ausfallfrachten-herne@duvenbeck.de). Jede
+Reklamation traegt ein ``typ``-Feld (TYP_AUSFALLFRACHT/TYP_STORNO), um
+beide Faelle im Dashboard zu unterscheiden. Dieses Modul spricht NICHT
+direkt mit SharePoint/Graph, sondern mit zwei HTTP-getriggerten Flows,
+die die dafuer noetigen, bereits im Tenant freigegebenen Connectors
+verwenden:
 
 - ``list_url``:   GET/POST ohne Body -> liefert alle Reklamationen als JSON.
 - ``update_url``: POST {"id": ..., "status": ...} -> setzt den Status einer
@@ -27,6 +31,10 @@ STATUS_IN_BEARBEITUNG = "In Bearbeitung"
 STATUS_ERLEDIGT = "Erledigt"
 STATUS_OPTIONS = [STATUS_OFFEN, STATUS_IN_BEARBEITUNG, STATUS_ERLEDIGT]
 
+TYP_AUSFALLFRACHT = "Ausfallfracht"
+TYP_STORNO = "Storno"
+TYP_OPTIONS = [TYP_AUSFALLFRACHT, TYP_STORNO]
+
 REQUEST_TIMEOUT_SECONDS = 20
 
 
@@ -39,6 +47,7 @@ class Reklamation:
     dateiname: str
     dateilink: str
     status: str
+    typ: str = TYP_AUSFALLFRACHT
 
 
 class ReklamationenError(RuntimeError):
@@ -58,6 +67,7 @@ def _parse_entry(raw: Dict[str, Any]) -> Reklamation:
         dateiname=_as_str(raw.get("Dateiname") or raw.get("dateiname")),
         dateilink=_as_str(raw.get("DateiLink") or raw.get("dateilink")),
         status=_as_str(raw.get("Status") or raw.get("status")) or STATUS_OFFEN,
+        typ=_as_str(raw.get("Typ") or raw.get("typ")) or TYP_AUSFALLFRACHT,
     )
 
 

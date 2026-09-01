@@ -8,6 +8,8 @@ import requests
 from reklamation_logic import (
     STATUS_ERLEDIGT,
     STATUS_OFFEN,
+    TYP_AUSFALLFRACHT,
+    TYP_STORNO,
     Reklamation,
     ReklamationenError,
     fetch_reklamationen,
@@ -57,6 +59,48 @@ def test_fetch_reklamationen_parses_value_wrapped_list():
             status="Offen",
         )
     ]
+
+
+def test_fetch_reklamationen_ohne_typ_feld_faellt_auf_ausfallfracht_zurueck():
+    payload = {
+        "value": [
+            {
+                "id": "1",
+                "Absender": "noreply@duvenbeck.de",
+                "Title": "Rechnung Ausfallfracht zu Frachtbrief",
+                "Empfangsdatum": "2026-03-05T10:00:00Z",
+                "Dateiname": "Ausfallfracht_0305.pdf",
+                "DateiLink": "https://sharepoint.example/dok/Ausfallfracht_0305.pdf",
+                "Status": "Offen",
+            }
+        ]
+    }
+    with patch("reklamation_logic.requests.get", return_value=_response(payload)):
+        result = fetch_reklamationen("https://flow.example/list")
+
+    assert result[0].typ == TYP_AUSFALLFRACHT
+
+
+def test_fetch_reklamationen_erkennt_storno_typ():
+    payload = {
+        "value": [
+            {
+                "id": "3",
+                "Absender": "ausfallfrachten-herne@duvenbeck.de",
+                "Title": "Storno Ausfallfracht KW10",
+                "Empfangsdatum": "2026-03-06T10:00:00Z",
+                "Dateiname": "Storno_0306.pdf",
+                "DateiLink": "https://sharepoint.example/dok/Storno_0306.pdf",
+                "Status": "Offen",
+                "Typ": "Storno",
+            }
+        ]
+    }
+    with patch("reklamation_logic.requests.get", return_value=_response(payload)):
+        result = fetch_reklamationen("https://flow.example/list")
+
+    assert result[0].typ == TYP_STORNO
+    assert result[0].absender == "ausfallfrachten-herne@duvenbeck.de"
 
 
 def test_fetch_reklamationen_accepts_plain_list():
