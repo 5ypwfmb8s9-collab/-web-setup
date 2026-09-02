@@ -6,6 +6,7 @@ Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
 """
 
 import io
+import os
 from datetime import date
 
 import pandas as pd
@@ -13,13 +14,17 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from ladeliste_logic import generate_workbook
-from reklamation_logic import (
-    STATUS_OPTIONS,
-    TYP_STORNO,
-    ReklamationenError,
-    fetch_reklamationen,
-    get_configured_urls,
-    update_status,
+from reklamation_logic import STATUS_OPTIONS
+from reklamation_lokal import (
+    EXCEL_COLUMNS,
+    excel_pfad,
+    guess_absender_betreff,
+    guess_eingangsdatum,
+    lade_excel,
+    lade_gespeicherten_basisordner,
+    speichere_basisordner,
+    speichere_excel,
+    speichere_pdf,
 )
 
 st.set_page_config(page_title="VW AI", page_icon="✨", layout="wide")
@@ -289,97 +294,96 @@ def render_reklamationen_tab() -> None:
         unsafe_allow_html=True,
     )
     st.write(
-        "Ausfallfracht-PDFs (Absender Duvenbeck), die per Power-Automate-Flow "
-        "aus dem gemeinsamen Postfach in SharePoint erfasst wurden."
+        "Ausfallfracht-/Storno-PDFs (Duvenbeck) hier per Drag & Drop hochladen. "
+        "PDF und Angaben werden automatisch im Basisordner erfasst."
     )
 
-    urls = get_configured_urls(st.secrets)
-    if urls is None:
-        st.info(
-            "Noch nicht eingerichtet: Es fehlt `.streamlit/secrets.toml` mit "
-            "`list_url`/`update_url`. Siehe **REKLAMATIONEN_SETUP.md** fuer die "
-            "Schritt-fuer-Schritt-Anleitung (Power-Automate-Flows + Secrets)."
-        )
+    basisordner = st.text_input(
+        "Basisordner (mit SharePoint/OneDrive synchronisiert)",
+        value=st.session_state.get(
+            "reklamationen_basisordner", lade_gespeicherten_basisordner()
+        ),
+        key="reklamationen_basisordner_input",
+    )
+    if st.button("Ordner merken", key="reklamationen_basisordner_speichern"):
+        speichere_basisordner(basisordner)
+        st.session_state["reklamationen_basisordner"] = basisordner
+        st.success("Ordner gemerkt - wird beim naechsten Start automatisch vorausgefuellt.")
+
+    if not basisordner:
+        st.info("Bitte oben einen Basisordner angeben.")
         return
 
-    refresh_clicked = st.button("Aktualisieren", key="reklamationen_refresh")
-    if refresh_clicked or "reklamationen_data" not in st.session_state:
-        with st.spinner("Lade Reklamationen..."):
-            try:
-                entries = fetch_reklamationen(urls["list_url"])
-            except ReklamationenError as exc:
-                st.error(f"Abruf fehlgeschlagen: {exc}")
-                return
-        st.session_state["reklamationen_data"] = [vars(e) for e in entries]
-        st.session_state["reklamationen_original"] = {
-            e.id: e.status for e in entries
-        }
+    pfad = excel_pfad(basisordner)
 
-    data = st.session_state["reklamationen_data"]
-    if not data:
-        st.success("Keine offenen Ausfallfracht-Reklamationen erfasst.")
+    if "reklamationen_rows" not in st.session_state:
+        st.session_state["reklamationen_rows"] = lade_excel(pfad)
+        st.session_state["reklamationen_verarbeitete_uploads"] = set()
+
+    uploaded_pdfs = st.file_uploader(
+        "PDFs hochladen (Ausfallfracht-Rechnungen oder Storno)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="reklamationen_pdf_upload",
+    )
+
+    if uploaded_pdfs:
+        neu_erfasst = 0
+        for f in uploaded_pdfs:
+            kennung = (f.name, f.size)
+            if kennung in st.session_state["reklamationen_verarbeitete_uploads"]:
+                continue
+
+            gespeicherter_pfad = speichere_pdf(basisordner, f.name, f.getvalue())
+            eintrag = {
+                "Eingangsdatum": guess_eingangsdatum(f.name),
+                "Dateiname_PDF": os.path.basename(gespeicherter_pfad),
+                "OneDrive_Pfad": gespeicherter_pfad,
+                "Status": "Offen",
+                "Prüfdatum": "",
+                "Ergebnis": "",
+                "Bemerkung": "",
+            }
+            eintrag.update(guess_absender_betreff(f.name))
+            st.session_state["reklamationen_rows"].append(eintrag)
+            st.session_state["reklamationen_verarbeitete_uploads"].add(kennung)
+            neu_erfasst += 1
+
+        if neu_erfasst:
+            speichere_excel(pfad, st.session_state["reklamationen_rows"])
+            st.success(f"{neu_erfasst} PDF(s) gespeichert und erfasst.")
+
+    rows = st.session_state["reklamationen_rows"]
+    if not rows:
+        st.info("Noch keine Reklamationen erfasst. Lade oben PDFs hoch.")
         return
 
-    df = pd.DataFrame(data)
+    df = pd.DataFrame(rows, columns=EXCEL_COLUMNS)
 
-    counts = df["status"].value_counts()
-    metric_labels = STATUS_OPTIONS + ["Storno"]
-    cols = st.columns(len(metric_labels))
+    status_counts = df["Status"].value_counts()
+    cols = st.columns(len(STATUS_OPTIONS))
     for col, status in zip(cols, STATUS_OPTIONS):
-        col.metric(status, int(counts.get(status, 0)))
-    cols[-1].metric("Storno", int((df["typ"] == TYP_STORNO).sum()))
+        col.metric(status, int(status_counts.get(status, 0)))
 
     edited_df = st.data_editor(
         df,
         key="reklamationen_editor",
-        num_rows="fixed",
+        num_rows="dynamic",
         hide_index=True,
-        column_order=[
-            "typ",
-            "absender",
-            "betreff",
-            "empfangsdatum",
-            "dateiname",
-            "dateilink",
-            "status",
-        ],
         column_config={
-            "id": None,
-            "typ": st.column_config.TextColumn("Typ", disabled=True),
-            "absender": st.column_config.TextColumn("Absender", disabled=True),
-            "betreff": st.column_config.TextColumn("Betreff", disabled=True),
-            "empfangsdatum": st.column_config.TextColumn(
-                "Empfangsdatum", disabled=True
-            ),
-            "dateiname": st.column_config.TextColumn("Dateiname", disabled=True),
-            "dateilink": st.column_config.LinkColumn("PDF", display_text="Oeffnen"),
-            "status": st.column_config.SelectboxColumn(
+            "Dateiname_PDF": st.column_config.TextColumn(disabled=True),
+            "OneDrive_Pfad": st.column_config.TextColumn(disabled=True),
+            "Status": st.column_config.SelectboxColumn(
                 "Status", options=STATUS_OPTIONS, required=True
             ),
         },
     )
 
-    if st.button("Status speichern", key="reklamationen_save"):
-        original = st.session_state["reklamationen_original"]
-        errors = []
-        saved = 0
-        for _, row in edited_df.iterrows():
-            if original.get(row["id"]) != row["status"]:
-                try:
-                    update_status(urls["update_url"], row["id"], row["status"])
-                    original[row["id"]] = row["status"]
-                    saved += 1
-                except ReklamationenError as exc:
-                    errors.append(f"{row['betreff']}: {exc}")
-
-        if saved:
-            st.session_state["reklamationen_data"] = edited_df.to_dict("records")
-            st.success(
-                f"{saved} Status-Aenderung(en) gespeichert. "
-                "Die Zaehler oben aktualisieren sich beim naechsten Klick."
-            )
-        if errors:
-            st.error("Fehler beim Speichern:\n" + "\n".join(errors))
+    if st.button("Änderungen speichern", key="reklamationen_save"):
+        neue_rows = edited_df.to_dict("records")
+        st.session_state["reklamationen_rows"] = neue_rows
+        speichere_excel(pfad, neue_rows)
+        st.success("Gespeichert.")
 
 
 tab_start, tab_ladelisten, tab_reklamationen = st.tabs(

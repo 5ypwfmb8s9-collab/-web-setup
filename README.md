@@ -49,14 +49,28 @@ Ausgabedatei um zwei weitere Blaetter ergaenzt:
 
 ## Reiter: Reklamationen (Ausfallfracht)
 
-Zeigt Ausfallfracht-PDFs von Duvenbeck als Dashboard: Absender, Betreff,
-Empfangsdatum, Link zur PDF und ein je Zeile aenderbarer Status (Offen /
-In Bearbeitung / Erledigt). Die Daten kommen ueber zwei
-Power-Automate-Flows aus einer SharePoint-Liste, die per E-Mail-Trigger
-automatisch befuellt wird - siehe **[REKLAMATIONEN_SETUP.md](REKLAMATIONEN_SETUP.md)**
-fuer die vollstaendige Einrichtung (Flows, SharePoint-Liste,
-`secrets.toml`). Ohne diese Einrichtung zeigt der Reiter einen Hinweis
-statt eines Fehlers.
+Ausfallfracht-/Storno-PDFs (Duvenbeck) werden per Drag & Drop hochgeladen:
+
+1. Einmalig einen **Basisordner** angeben (z.B. ein mit SharePoint/OneDrive
+   synchronisierter Ordner) und auf "Ordner merken" klicken - wird ab dann
+   automatisch vorausgefuellt.
+2. PDFs reinziehen - jede Datei wird automatisch in einen Unterordner
+   `Rechnungen_PDF` kopiert und als Zeile in `VW_Reklamationen.xlsx`
+   (Blatt "Tabelle1") erfasst (Absender/Betreff/Eingangsdatum werden
+   anhand des Dateinamens geraten, z.B. "Storno" im Namen -> Typ Storno).
+3. Alle Felder (Status, Pruefdatum, Ergebnis, Bemerkung, ...) sind direkt
+   in der Tabelle editierbar - "Aenderungen speichern" schreibt sie in die
+   Excel-Datei zurueck.
+
+Kein Power-Automate/SharePoint-Setup noetig. Die Logik dazu liegt in
+`reklamation_lokal.py`.
+
+**Alternative (mehr Automatisierung, mehr Einrichtungsaufwand):**
+`reklamation_logic.py` + **[REKLAMATIONEN_SETUP.md](REKLAMATIONEN_SETUP.md)**
+beschreiben einen Weg ueber Power-Automate-Flows, die Mails automatisch aus
+einem Postfach in eine SharePoint-Liste erfassen (aktuell nicht in der
+Oberflaeche verdrahtet, aber fertig getestet und nutzbar als Grundlage,
+falls das spaeter gewuenscht ist).
 
 ## Start
 
@@ -88,9 +102,10 @@ pytest
 
 Die Tests decken die PAL-Erkennung (inkl. Sonderfaelle wie unterschiedliche
 Abstaende, Gross-/Kleinschreibung, mehrfaches Vorkommen, aehnliche aber
-andere Ladungstraeger), das Zusammenfuehren mehrerer Quelldateien sowie
-den Abruf/Status-Update der Ausfallfracht-Reklamationen (mit
-simulierten HTTP-Antworten, ohne echte Power-Automate-Verbindung) ab.
+andere Ladungstraeger), das Zusammenfuehren mehrerer Quelldateien, die
+lokale Drag-&-Drop-Erfassung (Excel-Roundtrip, PDF-Ablage,
+Namenskollisionen) sowie den Abruf/Status-Update der
+Power-Automate-Variante (mit simulierten HTTP-Antworten) ab.
 
 ## Dateien
 
@@ -99,12 +114,16 @@ simulierten HTTP-Antworten, ohne echte Power-Automate-Verbindung) ab.
 - `ladeliste_logic.py` – reine Verarbeitungslogik fuer Ladelisten
   (Zusammenfuehren, LKW-Blaetter erzeugen, Validierung), UI-unabhaengig
   und per CLI nutzbar.
-- `reklamation_logic.py` – Abruf/Status-Update der Ausfallfracht-
-  Reklamationen ueber die Power-Automate-Flows, UI-unabhaengig.
+- `reklamation_lokal.py` – aktive Reklamationen-Logik: PDF-Ablage +
+  Excel-Erfassung im gewaehlten Basisordner, UI-unabhaengig.
+- `reklamation_logic.py` – Abruf/Status-Update ueber die
+  Power-Automate-Flows (Alternative, aktuell nicht in der Oberflaeche
+  verdrahtet), UI-unabhaengig.
 - `REKLAMATIONEN_SETUP.md` – Einrichtung der Power-Automate-Flows +
-  SharePoint fuer den Reklamationen-Reiter.
-- `tests/test_ladeliste_logic.py`, `tests/test_reklamation_logic.py` –
-  pytest-Tests.
+  SharePoint fuer die Power-Automate-Alternative.
+- `tests/test_ladeliste_logic.py`, `tests/test_reklamation_lokal.py`,
+  `tests/test_reklamation_logic.py` – pytest-Tests.
 - `requirements.txt` – Python-Abhaengigkeiten.
 - `.streamlit/secrets.toml.example` – Vorlage fuer die (nicht
-  eingecheckte) `secrets.toml` mit den Flow-URLs.
+  eingecheckte) `secrets.toml` mit den Flow-URLs (nur fuer die
+  Power-Automate-Alternative noetig).
