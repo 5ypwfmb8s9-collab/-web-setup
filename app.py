@@ -402,7 +402,22 @@ def render_reklamationen_tab() -> None:
                 nicht_erkannt.append(f.name)
 
             abholtag = eintrag["Abholtag"]
-            if beleg_nr and abholtag and archivordner:
+            if not archivordner:
+                fall_meldungen.append(
+                    f"{f.name}: kein Fall-Ordner erstellt - Archiv-Basisordner "
+                    "ist leer (siehe Ordner-Einstellungen)."
+                )
+            elif not beleg_nr:
+                fall_meldungen.append(
+                    f"{f.name}: kein Fall-Ordner erstellt - Beleg-Nr. wurde "
+                    "nicht erkannt."
+                )
+            elif not abholtag:
+                fall_meldungen.append(
+                    f"{f.name}: kein Fall-Ordner erstellt - Abholtag wurde "
+                    "nicht erkannt."
+                )
+            else:
                 fallordner, fehlend = erstelle_fallordner(
                     archivordner, basisordner, beleg_nr, abholtag, gespeicherter_pfad
                 )
