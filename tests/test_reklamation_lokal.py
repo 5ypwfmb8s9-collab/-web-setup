@@ -42,6 +42,15 @@ def _baue_test_pdf_ohne_beleg_box():
     return bytes(pdf.output())
 
 
+def _baue_test_pdf_mit_text(text):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_xy(20, 20)
+    pdf.multi_cell(150, 7, text)
+    return bytes(pdf.output())
+
+
 def test_extrahiere_beleg_und_datum_erkennt_layout():
     pdf_bytes = _baue_test_pdf_mit_beleg_box(
         beleg_nr="99887766", kto_nr="12345", datum="01.02.2026"
@@ -70,6 +79,88 @@ def test_sicherer_pdf_dateiname_fallback_ohne_belegnr():
 
 def test_sicherer_pdf_dateiname_saniert_unsichere_zeichen():
     assert rl.sicherer_pdf_dateiname("117/850 75", "x.pdf") == "117_850 75.pdf"
+
+
+def test_extrahiere_abholtag_erkennt_vom_muster():
+    pdf_bytes = _baue_test_pdf_mit_text("Reise: H FVX 024 vom 10.08.2026")
+    assert rl.extrahiere_abholtag(pdf_bytes) == "10.08.2026"
+
+
+def test_extrahiere_abholtag_erkennt_abholtag_muster_mit_kurzjahr():
+    pdf_bytes = _baue_test_pdf_mit_text("Solldaten ( Abholtag 10.08.26 ):")
+    assert rl.extrahiere_abholtag(pdf_bytes) == "10.08.2026"
+
+
+def test_extrahiere_abholtag_ohne_muster_gibt_none():
+    pdf_bytes = _baue_test_pdf_mit_text("Kein passendes Datum hier drin.")
+    assert rl.extrahiere_abholtag(pdf_bytes) is None
+
+
+def test_archiv_monatsordner_ersetzt_jahr_platzhalter():
+    vorlage = r"C:\Firma\Archiv - {jahr}"
+    ergebnis = rl.archiv_monatsordner(vorlage, "10.08.2026")
+    assert ergebnis == os.path.join(r"C:\Firma\Archiv - 2026", "08")
+
+
+def test_archiv_monatsordner_ohne_platzhalter_bleibt_unveraendert():
+    vorlage = r"C:\Firma\Archiv"
+    ergebnis = rl.archiv_monatsordner(vorlage, "10.08.2026")
+    assert ergebnis == os.path.join(r"C:\Firma\Archiv", "08")
+
+
+def test_erstelle_fallordner_findet_dateien_trotz_abweichender_trennzeichen(tmp_path):
+    archiv = tmp_path / "Archiv"
+    monatsordner = archiv / "08"
+    monatsordner.mkdir(parents=True)
+    (monatsordner / "20260810_Planung_VW_Planung.xlsx").write_text("planung")
+    (monatsordner / "20260810 Planung VW_Ladeliste.xlsx").write_text("ladeliste")
+    # Avisierung bewusst nicht angelegt, um die Fehlend-Meldung zu testen
+
+    reklamationen_basis = tmp_path / "Reklamationen"
+    reklamationen_basis.mkdir()
+    rechnung = tmp_path / "11785075.pdf"
+    rechnung.write_bytes(b"%PDF-1.4 dummy")
+
+    fallordner, fehlend = rl.erstelle_fallordner(
+        str(archiv), str(reklamationen_basis), "11785075", "10.08.2026", str(rechnung)
+    )
+
+    assert fallordner == str(reklamationen_basis / "Fall-11785075")
+    assert fehlend == ["Avisierung"]
+    erstellte_dateien = set(os.listdir(fallordner))
+    assert erstellte_dateien == {
+        "11785075.pdf",
+        "20260810_Planung_VW_Planung.xlsx",
+        "20260810 Planung VW_Ladeliste.xlsx",
+    }
+
+
+def test_erstelle_fallordner_ohne_monatsordner_meldet_alles_fehlend(tmp_path):
+    reklamationen_basis = tmp_path / "Reklamationen"
+    reklamationen_basis.mkdir()
+    rechnung = tmp_path / "x.pdf"
+    rechnung.write_bytes(b"%PDF-1.4 dummy")
+
+    fallordner, fehlend = rl.erstelle_fallordner(
+        str(tmp_path / "Archiv_gibt_es_nicht"),
+        str(reklamationen_basis),
+        "999",
+        "01.01.2026",
+        str(rechnung),
+    )
+
+    assert sorted(fehlend) == ["Avisierung", "Ladeliste", "Planung"]
+    assert os.path.exists(os.path.join(fallordner, "x.pdf"))
+
+
+def test_gespeicherter_archivordner_roundtrip(tmp_path, monkeypatch):
+    config_datei = str(tmp_path / ".reklamationen_archivordner.txt")
+    monkeypatch.setattr(rl, "ARCHIV_CONFIG_DATEI", config_datei)
+
+    assert rl.lade_gespeicherten_archivordner() == rl.STANDARD_ARCHIV_BASISORDNER
+
+    rl.speichere_archivordner(r"D:\Anderes\Archiv")
+    assert rl.lade_gespeicherten_archivordner() == r"D:\Anderes\Archiv"
 
 
 def test_guess_eingangsdatum_erkennt_datum_im_dateinamen():

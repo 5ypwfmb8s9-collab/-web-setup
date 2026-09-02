@@ -54,13 +54,37 @@ Ausfallfracht-/Storno-PDFs (Duvenbeck) werden per Drag & Drop hochgeladen:
 1. Einmalig einen **Basisordner** angeben (z.B. ein mit SharePoint/OneDrive
    synchronisierter Ordner) und auf "Ordner merken" klicken - wird ab dann
    automatisch vorausgefuellt.
-2. PDFs reinziehen - jede Datei wird automatisch in einen Unterordner
-   `Rechnungen_PDF` kopiert und als Zeile in `VW_Reklamationen.xlsx`
-   (Blatt "Tabelle1") erfasst (Absender/Betreff/Eingangsdatum werden
-   anhand des Dateinamens geraten, z.B. "Storno" im Namen -> Typ Storno).
+2. PDF reinziehen - die Datei wird inhaltlich ausgewertet (siehe unten),
+   automatisch in einen Unterordner `Rechnungen_PDF` kopiert (umbenannt
+   auf die Beleg-Nr.) und als Zeile in `VW_Reklamationen.xlsx` (Blatt
+   "Tabelle1") erfasst.
 3. Alle Felder (Status, Pruefdatum, Ergebnis, Bemerkung, ...) sind direkt
    in der Tabelle editierbar - "Aenderungen speichern" schreibt sie in die
    Excel-Datei zurueck.
+
+**PDF-Inhalt wird ausgelesen** (nicht nur der Dateiname):
+- **Beleg-Nr. und Eingangsdatum**: aus dem Kasten "Bei Zahlung bitte
+  angeben" auf Seite 1 (positionsbasiert - der Wert steht direkt unter
+  dem gleich weit links stehenden Label). Die Beleg-Nr. wird der neue
+  Dateiname der gespeicherten PDF.
+- **Abholtag**: aus dem Fliesstext ("... vom TT.MM.JJJJ" bzw.
+  "Abholtag TT.MM.JJ").
+- Wird das Layout nicht erkannt (z.B. eine anders aufgebaute PDF), faellt
+  das Programm auf eine Schaetzung aus dem Dateinamen zurueck und zeigt
+  eine Warnung, statt falsche Werte stillschweigend einzutragen.
+- Absender/Betreff werden weiterhin anhand des Original-Dateinamens
+  geraten (z.B. "Storno" im Namen -> Storno-Vorlage).
+
+**Automatische Fallordner-Buendelung**: Wird sowohl Beleg-Nr. als auch
+Abholtag erkannt, sucht das Programm im **Archiv-Basisordner** (zweites
+Eingabefeld, ebenfalls merkbar; `{jahr}` im Pfad wird automatisch durch
+das Jahr des Abholtags ersetzt) im Monatsordner (01-12) passend zum
+Abholtag nach den drei Dateien `<JJJJMMTT>..._VW_Planung`,
+`..._VW_Ladeliste`, `..._VW_Avisierung` (Trennzeichen im Dateinamen
+spielen keine Rolle) und kopiert sie zusammen mit der Rechnung in einen
+neuen Ordner `Fall-<Beleg-Nr>` unter dem Reklamationen-Basisordner.
+Nicht gefundene Dateien werden gemeldet, nicht stillschweigend
+ausgelassen.
 
 Kein Power-Automate/SharePoint-Setup noetig. Die Logik dazu liegt in
 `reklamation_lokal.py`.

@@ -17,13 +17,17 @@ from ladeliste_logic import generate_workbook
 from reklamation_logic import STATUS_OPTIONS
 from reklamation_lokal import (
     EXCEL_COLUMNS,
+    erstelle_fallordner,
     excel_pfad,
+    extrahiere_abholtag,
     extrahiere_beleg_und_datum,
     guess_absender_betreff,
     guess_eingangsdatum,
     lade_excel,
+    lade_gespeicherten_archivordner,
     lade_gespeicherten_basisordner,
     sicherer_pdf_dateiname,
+    speichere_archivordner,
     speichere_basisordner,
     speichere_excel,
     speichere_pdf,
@@ -312,15 +316,28 @@ def render_reklamationen_tab() -> None:
         st.session_state["reklamationen_basisordner"] = basisordner
         st.success("Ordner gemerkt - wird beim naechsten Start automatisch vorausgefuellt.")
 
+    archivordner = st.text_input(
+        "Archiv-Basisordner (Planung/Ladeliste/Avisierung, Jahr wird automatisch ergaenzt)",
+        value=st.session_state.get(
+            "reklamationen_archivordner", lade_gespeicherten_archivordner()
+        ),
+        key="reklamationen_archivordner_input",
+    )
+    if st.button("Archivordner merken", key="reklamationen_archivordner_speichern"):
+        speichere_archivordner(archivordner)
+        st.session_state["reklamationen_archivordner"] = archivordner
+        st.success("Archivordner gemerkt.")
+
     if not basisordner:
         st.info("Bitte oben einen Basisordner angeben.")
         return
 
     pfad = excel_pfad(basisordner)
 
-    if "reklamationen_rows" not in st.session_state:
+    if st.session_state.get("reklamationen_geladener_ordner") != basisordner:
         st.session_state["reklamationen_rows"] = lade_excel(pfad)
         st.session_state["reklamationen_verarbeitete_uploads"] = set()
+        st.session_state["reklamationen_geladener_ordner"] = basisordner
 
     uploaded_pdfs = st.file_uploader(
         "PDFs hochladen (Ausfallfracht-Rechnungen oder Storno)",
@@ -332,6 +349,7 @@ def render_reklamationen_tab() -> None:
     if uploaded_pdfs:
         neu_erfasst = 0
         nicht_erkannt = []
+        fall_meldungen = []
         for f in uploaded_pdfs:
             kennung = (f.name, f.size)
             if kennung in st.session_state["reklamationen_verarbeitete_uploads"]:
@@ -358,6 +376,21 @@ def render_reklamationen_tab() -> None:
             if beleg_nr is None:
                 nicht_erkannt.append(f.name)
 
+            abholtag = extrahiere_abholtag(inhalt)
+            if beleg_nr and abholtag and archivordner:
+                fallordner, fehlend = erstelle_fallordner(
+                    archivordner, basisordner, beleg_nr, abholtag, gespeicherter_pfad
+                )
+                if fehlend:
+                    fall_meldungen.append(
+                        f"{f.name}: Fall-Ordner erstellt, aber nicht gefunden: "
+                        + ", ".join(fehlend)
+                    )
+                else:
+                    fall_meldungen.append(
+                        f"{f.name}: alle Dateien in Fall-{beleg_nr} zusammengefasst."
+                    )
+
         if neu_erfasst:
             speichere_excel(pfad, st.session_state["reklamationen_rows"])
             st.success(f"{neu_erfasst} PDF(s) gespeichert und erfasst.")
@@ -367,6 +400,8 @@ def render_reklamationen_tab() -> None:
                 + ", ".join(nicht_erkannt)
                 + ". Bitte Eingangsdatum und Dateiname unten von Hand pruefen."
             )
+        for meldung in fall_meldungen:
+            st.info(meldung)
 
     rows = st.session_state["reklamationen_rows"]
     if not rows:

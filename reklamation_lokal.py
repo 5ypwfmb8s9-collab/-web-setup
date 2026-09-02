@@ -19,6 +19,7 @@ import datetime
 import io
 import os
 import re
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
@@ -46,6 +47,23 @@ STANDARD_BASISORDNER = (
 EXCEL_DATEINAME = "VW_Reklamationen.xlsx"
 PDF_UNTERORDNER = "Rechnungen_PDF"
 
+ARCHIV_CONFIG_DATEI = ".reklamationen_archivordner.txt"
+# {jahr} wird automatisch durch das Jahr des Abholtags ersetzt (siehe
+# archiv_monatsordner) - so muss der Pfad beim Jahreswechsel nicht von
+# Hand angepasst werden, solange sich nur die Jahreszahl im Ordnernamen
+# aendert.
+STANDARD_ARCHIV_BASISORDNER = (
+    r"C:\Users\okan.kocak\norm-fasteners.com.tr"
+    r"\Norm Fasteners Germany - {jahr}"
+)
+FALLORDNER_PRAEFIX = "Fall-"
+
+PLANUNGSDATEI_TYPEN = {
+    "Planung": "VW_Planung",
+    "Ladeliste": "VW_Ladeliste",
+    "Avisierung": "VW_Avisierung",
+}
+
 ABSENDER_AUSFALLFRACHT = "noreply@duvenbeck.de"
 BETREFF_AUSFALLFRACHT = "Rechnung Ausfallfracht zu Frachtbrief"
 ABSENDER_STORNO = "ausfallfrachten-herne@duvenbeck.de"
@@ -69,6 +87,24 @@ def lade_gespeicherten_basisordner() -> str:
 def speichere_basisordner(pfad: str) -> None:
     """Merkt sich den Basisordner dauerhaft fuer kuenftige Programmstarts."""
     with open(PFAD_CONFIG_DATEI, "w", encoding="utf-8") as f:
+        f.write(pfad.strip())
+
+
+def lade_gespeicherten_archivordner() -> str:
+    """Liest den zuletzt gespeicherten Archiv-Basisordner, falls vorhanden."""
+    try:
+        with open(ARCHIV_CONFIG_DATEI, "r", encoding="utf-8") as f:
+            pfad = f.read().strip()
+            if pfad:
+                return pfad
+    except FileNotFoundError:
+        pass
+    return STANDARD_ARCHIV_BASISORDNER
+
+
+def speichere_archivordner(pfad: str) -> None:
+    """Merkt sich den Archiv-Basisordner dauerhaft fuer kuenftige Programmstarts."""
+    with open(ARCHIV_CONFIG_DATEI, "w", encoding="utf-8") as f:
         f.write(pfad.strip())
 
 
@@ -151,6 +187,100 @@ def extrahiere_beleg_und_datum(
     beleg_nr = _wert_unter_label(words, beleg_label)
     datum = _wert_unter_label(words, datum_label) if datum_label else None
     return beleg_nr, datum
+
+
+_ABHOLTAG_MUSTER = [
+    re.compile(r"vom\s+(\d{2})\.(\d{2})\.(\d{4})"),
+    re.compile(r"Abholtag\s+(\d{2})\.(\d{2})\.(\d{2,4})"),
+]
+
+
+def extrahiere_abholtag(pdf_bytes: bytes) -> Optional[str]:
+    """Liest den Abholtag (TT.MM.JJJJ) aus dem Fliesstext der ersten Seite
+    (z.B. "Reise: ... vom 10.08.2026" oder "Abholtag 10.08.26"). Gibt None
+    zurueck, wenn kein passendes Muster gefunden wird."""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if not pdf.pages:
+                return None
+            text = pdf.pages[0].extract_text() or ""
+    except Exception:
+        return None
+
+    for muster in _ABHOLTAG_MUSTER:
+        match = muster.search(text)
+        if match:
+            tag, monat, jahr = match.groups()
+            if len(jahr) == 2:
+                jahr = "20" + jahr
+            return f"{tag}.{monat}.{jahr}"
+    return None
+
+
+def archiv_monatsordner(archiv_basisordner_vorlage: str, abholtag: str) -> str:
+    """Baut den Pfad zum Monatsordner (01-12) im Archiv fuer ein Datum
+    (TT.MM.JJJJ). "{jahr}" in der Vorlage wird durch das Jahr des
+    Abholtags ersetzt."""
+    tag, monat, jahr = abholtag.split(".")
+    basis = (
+        archiv_basisordner_vorlage.format(jahr=jahr)
+        if "{jahr}" in archiv_basisordner_vorlage
+        else archiv_basisordner_vorlage
+    )
+    return os.path.join(basis, monat)
+
+
+def _normalisiere(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def erstelle_fallordner(
+    archiv_basisordner_vorlage: str,
+    reklamationen_basisordner: str,
+    beleg_nr: str,
+    abholtag: str,
+    rechnung_pfad: str,
+) -> Tuple[str, List[str]]:
+    """Sucht die Planungs-/Ladelisten-/Avisierungs-Datei des Abholtags im
+    passenden Monatsordner und kopiert sie zusammen mit der Rechnung in
+    einen neuen Ordner "Fall-<Beleg-Nr>" unter reklamationen_basisordner.
+
+    Gibt (fallordner_pfad, liste_nicht_gefundener_dateitypen) zurueck -
+    fehlende Dateien fuehren nicht zum Abbruch, sondern werden nur
+    gemeldet (Layout/Namenskonvention kann variieren)."""
+    tag, monat, jahr = abholtag.split(".")
+    datumspraefix = f"{jahr}{monat}{tag}"
+    monatsordner = archiv_monatsordner(archiv_basisordner_vorlage, abholtag)
+
+    fallordner = os.path.join(reklamationen_basisordner, f"{FALLORDNER_PRAEFIX}{beleg_nr}")
+    os.makedirs(fallordner, exist_ok=True)
+    shutil.copy2(rechnung_pfad, os.path.join(fallordner, os.path.basename(rechnung_pfad)))
+
+    if os.path.isdir(monatsordner):
+        vorhandene_dateien = os.listdir(monatsordner)
+    else:
+        vorhandene_dateien = []
+
+    nicht_gefunden = []
+    for typ, suchbegriff in PLANUNGSDATEI_TYPEN.items():
+        treffer = next(
+            (
+                d
+                for d in vorhandene_dateien
+                if datumspraefix in _normalisiere(d)
+                and _normalisiere(suchbegriff) in _normalisiere(d)
+            ),
+            None,
+        )
+        if treffer:
+            shutil.copy2(
+                os.path.join(monatsordner, treffer),
+                os.path.join(fallordner, treffer),
+            )
+        else:
+            nicht_gefunden.append(typ)
+
+    return fallordner, nicht_gefunden
 
 
 _UNSICHERE_ZEICHEN = re.compile(r'[\\/:*?"<>|]+')

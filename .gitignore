@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 .streamlit/secrets.toml
 .reklamationen_basisordner.txt
+.reklamationen_archivordner.txt
