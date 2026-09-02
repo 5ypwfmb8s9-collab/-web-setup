@@ -338,7 +338,16 @@ def render_reklamationen_tab() -> None:
     pfad = excel_pfad(basisordner)
 
     if st.session_state.get("reklamationen_geladener_ordner") != basisordner:
-        st.session_state["reklamationen_rows"] = lade_excel(pfad)
+        try:
+            geladene_rows = lade_excel(pfad)
+        except PermissionError:
+            st.error(
+                f"`{os.path.basename(pfad)}` ist gerade geoeffnet (z.B. in Excel) "
+                "und kann nicht gelesen werden. Datei schliessen und die Seite "
+                "neu laden."
+            )
+            return
+        st.session_state["reklamationen_rows"] = geladene_rows
         st.session_state["reklamationen_verarbeitete_uploads"] = set()
         st.session_state["reklamationen_geladener_ordner"] = basisordner
 
@@ -397,8 +406,17 @@ def render_reklamationen_tab() -> None:
                     )
 
         if neu_erfasst:
-            speichere_excel(pfad, st.session_state["reklamationen_rows"])
-            st.success(f"{neu_erfasst} PDF(s) gespeichert und erfasst.")
+            try:
+                speichere_excel(pfad, st.session_state["reklamationen_rows"])
+                st.success(f"{neu_erfasst} PDF(s) gespeichert und erfasst.")
+            except PermissionError:
+                st.error(
+                    f"`{os.path.basename(pfad)}` ist gerade geoeffnet (z.B. in "
+                    "Excel) und konnte nicht aktualisiert werden. Die PDFs "
+                    "wurden trotzdem gespeichert - Datei schliessen und "
+                    "'Aenderungen speichern' unten klicken, um die Excel-Datei "
+                    "nachzuziehen."
+                )
         if nicht_erkannt:
             st.warning(
                 "Beleg-Nr./Datum konnten nicht automatisch erkannt werden bei: "
@@ -448,8 +466,16 @@ def render_reklamationen_tab() -> None:
     if st.button("Änderungen speichern", key="reklamationen_save"):
         neue_rows = edited_df.to_dict("records")
         st.session_state["reklamationen_rows"] = neue_rows
-        speichere_excel(pfad, neue_rows)
-        st.success("Gespeichert.")
+        try:
+            speichere_excel(pfad, neue_rows)
+            st.success("Gespeichert.")
+        except PermissionError:
+            st.error(
+                f"`{os.path.basename(pfad)}` ist gerade geoeffnet (z.B. in "
+                "Excel) und kann nicht gespeichert werden. Datei schliessen "
+                "und nochmal auf 'Aenderungen speichern' klicken - deine "
+                "Aenderungen sind bis dahin nicht verloren."
+            )
 
 
 tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
