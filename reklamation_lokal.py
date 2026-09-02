@@ -7,10 +7,11 @@ PDF-Unterordner und werden als Zeile in einer Excel-Datei erfasst - beide
 in einem frei waehlbaren Basisordner (z.B. einem SharePoint/OneDrive-
 synchronisierten Ordner), kein Power-Automate/SharePoint-Setup noetig.
 
-Excel-Spalten und Blattname folgen exakt der vom Nutzer vorgegebenen
-Vorlage (VW_Reklamationen.xlsx, Blatt "Tabelle1"):
-Eingangsdatum, Absender, Betreff, Dateiname_PDF, OneDrive_Pfad, Status,
-Pruefdatum, Ergebnis, Bemerkung.
+Excel-Spalten und Blattname basieren auf der vom Nutzer vorgegebenen
+Vorlage (VW_Reklamationen.xlsx, Blatt "Tabelle1"), ergaenzt um Betrag
+und Zugewiesen: Eingangsdatum, Absender, Betreff, Dateiname_PDF,
+OneDrive_Pfad, Betrag, Zugewiesen, Status, Pruefdatum, Ergebnis,
+Bemerkung.
 """
 
 from __future__ import annotations
@@ -32,12 +33,17 @@ EXCEL_COLUMNS = [
     "Betreff",
     "Dateiname_PDF",
     "OneDrive_Pfad",
+    "Betrag",
+    "Zugewiesen",
     "Status",
     "Prüfdatum",
     "Ergebnis",
     "Bemerkung",
 ]
-EXCEL_SPALTENBREITEN = [16, 28, 40, 18, 45, 16, 14, 16, 30]
+EXCEL_SPALTENBREITEN = [16, 28, 40, 18, 45, 14, 16, 16, 14, 14, 30]
+
+ZUGEWIESEN_OPTIONEN = ["", "Murat Kurt", "Okan Kocak", "Alperen Konar", "Levin Akarcay"]
+ERGEBNIS_OPTIONEN = ["", "Berechtigt", "Unberechtigt"]
 
 PFAD_CONFIG_DATEI = ".reklamationen_basisordner.txt"
 STANDARD_BASISORDNER = (
@@ -214,6 +220,25 @@ def extrahiere_abholtag(pdf_bytes: bytes) -> Optional[str]:
             if len(jahr) == 2:
                 jahr = "20" + jahr
             return f"{tag}.{monat}.{jahr}"
+    return None
+
+
+_BETRAG_MUSTER = re.compile(r"Endbetrag\s*\n?\s*([\d.,]+)\s*EUR")
+
+
+def extrahiere_betrag(pdf_bytes: bytes) -> Optional[str]:
+    """Liest den Endbetrag (z.B. "468,86 EUR") - steht meist auf der
+    letzten Seite, daher werden alle Seiten durchsucht. Gibt None zurueck,
+    wenn kein "Endbetrag" gefunden wird."""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                match = _BETRAG_MUSTER.search(text)
+                if match:
+                    return f"{match.group(1)} EUR"
+    except Exception:
+        return None
     return None
 
 

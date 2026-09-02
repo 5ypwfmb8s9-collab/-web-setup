@@ -69,6 +69,8 @@ Ausfallfracht-/Storno-PDFs (Duvenbeck) werden per Drag & Drop hochgeladen:
   Dateiname der gespeicherten PDF.
 - **Abholtag**: aus dem Fliesstext ("... vom TT.MM.JJJJ" bzw.
   "Abholtag TT.MM.JJ").
+- **Betrag**: der "Endbetrag" (durchsucht alle Seiten, meist auf der
+  letzten).
 - Wird das Layout nicht erkannt (z.B. eine anders aufgebaute PDF), faellt
   das Programm auf eine Schaetzung aus dem Dateinamen zurueck und zeigt
   eine Warnung, statt falsche Werte stillschweigend einzutragen.
@@ -85,6 +87,14 @@ spielen keine Rolle) und kopiert sie zusammen mit der Rechnung in einen
 neuen Ordner `Fall-<Beleg-Nr>` unter dem Reklamationen-Basisordner.
 Nicht gefundene Dateien werden gemeldet, nicht stillschweigend
 ausgelassen.
+
+**Bearbeitungs-Dashboard**: neben Status (Offen/In Bearbeitung/Erledigt)
+zeigt/erfasst die Tabelle zusaetzlich:
+- **Zugewiesen**: wer den Fall gerade bearbeitet (Auswahl: Murat Kurt,
+  Okan Kocak, Alperen Konar, Levin Akarcay).
+- **Ergebnis**: Auswahl Berechtigt/Unberechtigt nach Pruefung.
+Die Zaehler oben zeigen sowohl die Status- als auch die
+Berechtigt/Unberechtigt-Verteilung.
 
 Kein Power-Automate/SharePoint-Setup noetig. Die Logik dazu liegt in
 `reklamation_lokal.py`.

@@ -96,6 +96,27 @@ def test_extrahiere_abholtag_ohne_muster_gibt_none():
     assert rl.extrahiere_abholtag(pdf_bytes) is None
 
 
+def test_extrahiere_betrag_erkennt_endbetrag():
+    pdf_bytes = _baue_test_pdf_mit_text("Summe 394,00 EUR\nEndbetrag 468,86 EUR")
+    assert rl.extrahiere_betrag(pdf_bytes) == "468,86 EUR"
+
+
+def test_extrahiere_betrag_ohne_endbetrag_gibt_none():
+    pdf_bytes = _baue_test_pdf_mit_text("Kein Endbetrag auf dieser Seite.")
+    assert rl.extrahiere_betrag(pdf_bytes) is None
+
+
+def test_zugewiesen_und_ergebnis_optionen_enthalten_erwartete_werte():
+    assert rl.ZUGEWIESEN_OPTIONEN == [
+        "",
+        "Murat Kurt",
+        "Okan Kocak",
+        "Alperen Konar",
+        "Levin Akarcay",
+    ]
+    assert rl.ERGEBNIS_OPTIONEN == ["", "Berechtigt", "Unberechtigt"]
+
+
 def test_archiv_monatsordner_ersetzt_jahr_platzhalter():
     vorlage = r"C:\Firma\Archiv - {jahr}"
     ergebnis = rl.archiv_monatsordner(vorlage, "10.08.2026")
@@ -229,6 +250,8 @@ def test_speichere_und_lade_excel_roundtrip(tmp_path):
             "Betreff": "Rechnung Ausfallfracht zu Frachtbrief",
             "Dateiname_PDF": "Ausfallfracht_20260305.pdf",
             "OneDrive_Pfad": r"C:\Basis\Rechnungen_PDF\Ausfallfracht_20260305.pdf",
+            "Betrag": "394,00 EUR",
+            "Zugewiesen": "Murat Kurt",
             "Status": "Offen",
             "Prüfdatum": "",
             "Ergebnis": "",

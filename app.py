@@ -16,11 +16,14 @@ import streamlit.components.v1 as components
 from ladeliste_logic import generate_workbook
 from reklamation_logic import STATUS_OPTIONS
 from reklamation_lokal import (
+    ERGEBNIS_OPTIONEN,
     EXCEL_COLUMNS,
+    ZUGEWIESEN_OPTIONEN,
     erstelle_fallordner,
     excel_pfad,
     extrahiere_abholtag,
     extrahiere_beleg_und_datum,
+    extrahiere_betrag,
     guess_absender_betreff,
     guess_eingangsdatum,
     lade_excel,
@@ -364,6 +367,8 @@ def render_reklamationen_tab() -> None:
                 "Eingangsdatum": pdf_datum or guess_eingangsdatum(f.name),
                 "Dateiname_PDF": os.path.basename(gespeicherter_pfad),
                 "OneDrive_Pfad": gespeicherter_pfad,
+                "Betrag": extrahiere_betrag(inhalt) or "",
+                "Zugewiesen": "",
                 "Status": "Offen",
                 "Prüfdatum": "",
                 "Ergebnis": "",
@@ -415,6 +420,11 @@ def render_reklamationen_tab() -> None:
     for col, status in zip(cols, STATUS_OPTIONS):
         col.metric(status, int(status_counts.get(status, 0)))
 
+    ergebnis_counts = df["Ergebnis"].value_counts()
+    ergebnis_cols = st.columns(2)
+    ergebnis_cols[0].metric("Berechtigt", int(ergebnis_counts.get("Berechtigt", 0)))
+    ergebnis_cols[1].metric("Unberechtigt", int(ergebnis_counts.get("Unberechtigt", 0)))
+
     edited_df = st.data_editor(
         df,
         key="reklamationen_editor",
@@ -423,8 +433,14 @@ def render_reklamationen_tab() -> None:
         column_config={
             "Dateiname_PDF": st.column_config.TextColumn(disabled=True),
             "OneDrive_Pfad": st.column_config.TextColumn(disabled=True),
+            "Zugewiesen": st.column_config.SelectboxColumn(
+                "Zugewiesen", options=ZUGEWIESEN_OPTIONEN
+            ),
             "Status": st.column_config.SelectboxColumn(
                 "Status", options=STATUS_OPTIONS, required=True
+            ),
+            "Ergebnis": st.column_config.SelectboxColumn(
+                "Ergebnis", options=ERGEBNIS_OPTIONEN
             ),
         },
     )
