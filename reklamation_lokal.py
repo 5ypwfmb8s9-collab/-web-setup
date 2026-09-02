@@ -242,7 +242,7 @@ def extrahiere_betrag(pdf_bytes: bytes) -> Optional[str]:
     return None
 
 
-_FIRMA_MUSTER = re.compile(r"Empf[aä]nger\s*:\s*(.+?)\s*\.\s*[A-Z]{2}[-\s]")
+_FIRMA_MUSTER = re.compile(r"Empf[aä]nger\s*:\s*(.+?)\s*\.\s*[A-Z]{1,2}-")
 
 
 def extrahiere_firma(pdf_bytes: bytes) -> Optional[str]:

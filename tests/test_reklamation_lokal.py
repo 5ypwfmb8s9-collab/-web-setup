@@ -128,6 +128,14 @@ def test_extrahiere_firma_erkennt_empfaenger():
     assert rl.extrahiere_firma(pdf_bytes) == "Skoda Auto a.s."
 
 
+def test_extrahiere_firma_erkennt_inlaendischen_einbuchstabigen_laendercode():
+    pdf_bytes = _baue_test_pdf_mit_text(
+        "Absender : Norm Fasteners GmbH . D-47807 Krefeld\n"
+        "Empfänger : Musterkunde AG . D-12345 Musterstadt"
+    )
+    assert rl.extrahiere_firma(pdf_bytes) == "Musterkunde AG"
+
+
 def test_extrahiere_firma_ohne_muster_gibt_none():
     pdf_bytes = _baue_test_pdf_mit_text("Kein Empfaenger-Feld hier.")
     assert rl.extrahiere_firma(pdf_bytes) is None
