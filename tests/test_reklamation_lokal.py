@@ -96,6 +96,20 @@ def test_extrahiere_abholtag_ohne_muster_gibt_none():
     assert rl.extrahiere_abholtag(pdf_bytes) is None
 
 
+def test_extrahiere_abholtag_findet_muster_auf_spaeterer_seite():
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_xy(20, 20)
+    pdf.multi_cell(150, 7, "Seite 1 ohne passendes Datum.")
+    pdf.add_page()
+    pdf.set_xy(20, 20)
+    pdf.multi_cell(150, 7, "Reise: H FVX 024 vom 10.08.2026")
+    pdf_bytes = bytes(pdf.output())
+
+    assert rl.extrahiere_abholtag(pdf_bytes) == "10.08.2026"
+
+
 def test_extrahiere_betrag_erkennt_endbetrag():
     pdf_bytes = _baue_test_pdf_mit_text("Summe 394,00 EUR\nEndbetrag 468,86 EUR")
     assert rl.extrahiere_betrag(pdf_bytes) == "468,86 EUR"

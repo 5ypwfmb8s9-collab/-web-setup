@@ -204,24 +204,22 @@ _ABHOLTAG_MUSTER = [
 
 
 def extrahiere_abholtag(pdf_bytes: bytes) -> Optional[str]:
-    """Liest den Abholtag (TT.MM.JJJJ) aus dem Fliesstext der ersten Seite
-    (z.B. "Reise: ... vom 10.08.2026" oder "Abholtag 10.08.26"). Gibt None
-    zurueck, wenn kein passendes Muster gefunden wird."""
+    """Liest den Abholtag (TT.MM.JJJJ) aus dem Fliesstext (z.B. "Reise:
+    ... vom 10.08.2026" oder "Abholtag 10.08.26"). Durchsucht alle
+    Seiten, gibt None zurueck wenn kein passendes Muster gefunden wird."""
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            if not pdf.pages:
-                return None
-            text = pdf.pages[0].extract_text() or ""
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                for muster in _ABHOLTAG_MUSTER:
+                    match = muster.search(text)
+                    if match:
+                        tag, monat, jahr = match.groups()
+                        if len(jahr) == 2:
+                            jahr = "20" + jahr
+                        return f"{tag}.{monat}.{jahr}"
     except Exception:
         return None
-
-    for muster in _ABHOLTAG_MUSTER:
-        match = muster.search(text)
-        if match:
-            tag, monat, jahr = match.groups()
-            if len(jahr) == 2:
-                jahr = "20" + jahr
-            return f"{tag}.{monat}.{jahr}"
     return None
 
 

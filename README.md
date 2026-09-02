@@ -1,9 +1,8 @@
 # VW AI
 
 Werkzeugsammlung mit mehreren Reitern: **Ladelisten** (automatisierte
-Verarbeitung von Excel-Ladelisten), **Reklamationen**
-(Ausfallfracht-Dashboard) und **Referenz** (Nachschlage-Liste dazu).
-Weitere Werkzeuge folgen.
+Verarbeitung von Excel-Ladelisten) und **Reklamationen**
+(Ausfallfracht-Dashboard). Weitere Werkzeuge folgen.
 
 ## Reiter: Ladelisten
 
@@ -75,8 +74,8 @@ Ausfallfracht-/Storno-PDFs (Duvenbeck) werden per Drag & Drop hochgeladen:
 - **Betrag**: der "Endbetrag" (durchsucht alle Seiten, meist auf der
   letzten).
 - **Referenznummern**: die SLB-Nummern unter "Nummer:" am Dokumentende -
-  nicht in der Haupttabelle sichtbar, sondern im Reiter **Referenz**
-  (siehe unten).
+  wird erfasst (Spalte `Referenznummern` in der Excel-Datei), aber nicht
+  in der Haupttabelle im Dashboard angezeigt.
 - Wird das Layout nicht erkannt (z.B. eine anders aufgebaute PDF), faellt
   das Programm fuer Eingangsdatum auf eine Schaetzung aus dem Dateinamen
   zurueck und zeigt eine Warnung, statt falsche Werte stillschweigend
@@ -108,13 +107,6 @@ Berechtigt/Unberechtigt-Verteilung, alle in einer Zeile ausgerichtet.
 Das Dashboard (Kennzahlen + Tabelle) steht ueber dem Upload-Bereich; die
 Ordner-Einstellungen sind in einen Aufklapper (eingeklappt) verschoben,
 damit das Dashboard direkt sichtbar ist.
-
-## Reiter: Referenz
-
-Nachschlage-Liste aller SLB-Referenznummern aus den im Reiter
-Reklamationen erfassten Rechnungen (eine Zeile je Nummer, mit Beleg-Nr.,
-Firma, Betreff und Eingangsdatum der zugehoerigen Rechnung), durchsuchbar
-per Textfeld.
 
 Kein Power-Automate/SharePoint-Setup noetig. Die Logik dazu liegt in
 `reklamation_lokal.py`.

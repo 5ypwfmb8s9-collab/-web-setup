@@ -1,9 +1,8 @@
 """VW AI - Streamlit-Oberflaeche.
 
 Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
-(automatische Verarbeitung von Excel-Ladelisten), "Reklamationen"
-(Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung) und
-"Referenz" (Nachschlage-Liste der SLB-Referenznummern).
+(automatische Verarbeitung von Excel-Ladelisten) und "Reklamationen"
+(Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung).
 """
 
 import io
@@ -493,45 +492,8 @@ def render_reklamationen_tab() -> None:
                 )
 
 
-def render_referenz_tab() -> None:
-    st.title("Referenz")
-    st.write(
-        "Nachschlage-Liste aller SLB-Referenznummern aus den im Reiter "
-        "Reklamationen erfassten Rechnungen."
-    )
-
-    rows = st.session_state.get("reklamationen_rows", [])
-    eintraege = []
-    for row in rows:
-        nummern = [n for n in (row.get("Referenznummern") or "").split(";") if n]
-        for nummer in nummern:
-            eintraege.append(
-                {
-                    "Referenznummer": nummer,
-                    "Beleg-Nr": os.path.splitext(row.get("Dateiname_PDF") or "")[0],
-                    "Firma": row.get("Firma") or "",
-                    "Betreff": row.get("Betreff") or "",
-                    "Eingangsdatum": row.get("Eingangsdatum") or "",
-                }
-            )
-
-    if not eintraege:
-        st.info(
-            "Noch keine Referenznummern erfasst - werden automatisch aus "
-            "hochgeladenen Rechnungen im Reiter Reklamationen uebernommen."
-        )
-        return
-
-    df = pd.DataFrame(eintraege)
-    suche = st.text_input("Suche nach Referenznummer", key="referenz_suche")
-    if suche:
-        df = df[df["Referenznummer"].str.contains(suche, case=False, na=False)]
-
-    st.dataframe(df, hide_index=True, use_container_width=True)
-
-
-tab_start, tab_ladelisten, tab_reklamationen, tab_referenz = st.tabs(
-    ["Start", "Ladelisten", "Reklamationen", "Referenz"]
+tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
+    ["Start", "Ladelisten", "Reklamationen"]
 )
 
 with tab_start:
@@ -542,6 +504,3 @@ with tab_ladelisten:
 
 with tab_reklamationen:
     render_reklamationen_tab()
-
-with tab_referenz:
-    render_referenz_tab()
