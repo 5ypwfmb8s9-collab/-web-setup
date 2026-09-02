@@ -4,3 +4,4 @@ __pycache__/
 .streamlit/secrets.toml
 .reklamationen_basisordner.txt
 .reklamationen_archivordner.txt
+start_log.txt

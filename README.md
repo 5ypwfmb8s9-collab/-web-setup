@@ -120,6 +120,17 @@ falls das spaeter gewuenscht ist).
 
 ## Start
 
+**Windows, per Doppelklick:** `Start_VW_AI.bat` im Programmordner
+doppelklicken - prueft Python, installiert/aktualisiert die
+Abhaengigkeiten und startet das Programm; der Browser oeffnet sich
+automatisch. Ein Protokoll dieses Starts landet in `start_log.txt` im
+selben Ordner - bei Problemen einfach diese Datei zur Fehlersuche
+schicken. Fuer einen Kollegen: den kompletten Programmordner (nicht nur
+die BAT-Datei) kopieren/zippen und weitergeben, Python muss vorher
+installiert sein (z.B. ueber den Microsoft Store).
+
+**Manuell (alle Plattformen):**
+
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
