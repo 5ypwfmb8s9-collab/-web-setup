@@ -3,7 +3,73 @@
 import datetime
 import os
 
+from fpdf import FPDF
+
 import reklamation_lokal as rl
+
+
+def _baue_test_pdf_mit_beleg_box(beleg_nr="11785075", kto_nr="1023115", datum="27.08.2026"):
+    """Baut eine minimale synthetische PDF mit dem gleichen Spalten-Layout
+    wie der Duvenbeck-Kasten "Bei Zahlung bitte angeben" (Label-Zeile +
+    Werte-Zeile, je Spalte gleiche linke Kante) - ohne echte Rechnungsdaten."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+
+    pdf.set_xy(50, 50)
+    pdf.cell(40, 7, "Beleg-Nr.")
+    pdf.set_xy(100, 50)
+    pdf.cell(40, 7, "Kto-Nr.")
+    pdf.set_xy(150, 50)
+    pdf.cell(40, 7, "Datum")
+
+    pdf.set_xy(50, 59)
+    pdf.cell(40, 9, beleg_nr)
+    pdf.set_xy(100, 59)
+    pdf.cell(40, 9, kto_nr)
+    pdf.set_xy(150, 59)
+    pdf.cell(40, 9, datum)
+
+    return bytes(pdf.output())
+
+
+def _baue_test_pdf_ohne_beleg_box():
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_xy(20, 20)
+    pdf.cell(100, 7, "Ein ganz anderes Dokument ohne die erwartete Box.")
+    return bytes(pdf.output())
+
+
+def test_extrahiere_beleg_und_datum_erkennt_layout():
+    pdf_bytes = _baue_test_pdf_mit_beleg_box(
+        beleg_nr="99887766", kto_nr="12345", datum="01.02.2026"
+    )
+    beleg_nr, datum = rl.extrahiere_beleg_und_datum(pdf_bytes)
+    assert beleg_nr == "99887766"
+    assert datum == "01.02.2026"
+
+
+def test_extrahiere_beleg_und_datum_ohne_passendes_layout_gibt_none():
+    pdf_bytes = _baue_test_pdf_ohne_beleg_box()
+    assert rl.extrahiere_beleg_und_datum(pdf_bytes) == (None, None)
+
+
+def test_extrahiere_beleg_und_datum_bei_kaputter_pdf_gibt_none():
+    assert rl.extrahiere_beleg_und_datum(b"das ist keine PDF-Datei") == (None, None)
+
+
+def test_sicherer_pdf_dateiname_mit_belegnr():
+    assert rl.sicherer_pdf_dateiname("11785075", "original.pdf") == "11785075.pdf"
+
+
+def test_sicherer_pdf_dateiname_fallback_ohne_belegnr():
+    assert rl.sicherer_pdf_dateiname(None, "Meine Rechnung.pdf") == "Meine Rechnung.pdf"
+
+
+def test_sicherer_pdf_dateiname_saniert_unsichere_zeichen():
+    assert rl.sicherer_pdf_dateiname("117/850 75", "x.pdf") == "117_850 75.pdf"
 
 
 def test_guess_eingangsdatum_erkennt_datum_im_dateinamen():

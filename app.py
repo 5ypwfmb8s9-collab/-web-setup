@@ -18,10 +18,12 @@ from reklamation_logic import STATUS_OPTIONS
 from reklamation_lokal import (
     EXCEL_COLUMNS,
     excel_pfad,
+    extrahiere_beleg_und_datum,
     guess_absender_betreff,
     guess_eingangsdatum,
     lade_excel,
     lade_gespeicherten_basisordner,
+    sicherer_pdf_dateiname,
     speichere_basisordner,
     speichere_excel,
     speichere_pdf,
@@ -329,14 +331,19 @@ def render_reklamationen_tab() -> None:
 
     if uploaded_pdfs:
         neu_erfasst = 0
+        nicht_erkannt = []
         for f in uploaded_pdfs:
             kennung = (f.name, f.size)
             if kennung in st.session_state["reklamationen_verarbeitete_uploads"]:
                 continue
 
-            gespeicherter_pfad = speichere_pdf(basisordner, f.name, f.getvalue())
+            inhalt = f.getvalue()
+            beleg_nr, pdf_datum = extrahiere_beleg_und_datum(inhalt)
+            neuer_dateiname = sicherer_pdf_dateiname(beleg_nr, f.name)
+
+            gespeicherter_pfad = speichere_pdf(basisordner, neuer_dateiname, inhalt)
             eintrag = {
-                "Eingangsdatum": guess_eingangsdatum(f.name),
+                "Eingangsdatum": pdf_datum or guess_eingangsdatum(f.name),
                 "Dateiname_PDF": os.path.basename(gespeicherter_pfad),
                 "OneDrive_Pfad": gespeicherter_pfad,
                 "Status": "Offen",
@@ -348,10 +355,18 @@ def render_reklamationen_tab() -> None:
             st.session_state["reklamationen_rows"].append(eintrag)
             st.session_state["reklamationen_verarbeitete_uploads"].add(kennung)
             neu_erfasst += 1
+            if beleg_nr is None:
+                nicht_erkannt.append(f.name)
 
         if neu_erfasst:
             speichere_excel(pfad, st.session_state["reklamationen_rows"])
             st.success(f"{neu_erfasst} PDF(s) gespeichert und erfasst.")
+        if nicht_erkannt:
+            st.warning(
+                "Beleg-Nr./Datum konnten nicht automatisch erkannt werden bei: "
+                + ", ".join(nicht_erkannt)
+                + ". Bitte Eingangsdatum und Dateiname unten von Hand pruefen."
+            )
 
     rows = st.session_state["reklamationen_rows"]
     if not rows:

@@ -16,10 +16,12 @@ Pruefdatum, Ergebnis, Bemerkung.
 from __future__ import annotations
 
 import datetime
+import io
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
+import pdfplumber
 from openpyxl import Workbook, load_workbook
 
 SHEET_NAME = "Tabelle1"
@@ -94,6 +96,72 @@ def guess_absender_betreff(dateiname: str) -> Dict[str, str]:
     if "storno" in dateiname.lower():
         return {"Absender": ABSENDER_STORNO, "Betreff": BETREFF_STORNO}
     return {"Absender": ABSENDER_AUSFALLFRACHT, "Betreff": BETREFF_AUSFALLFRACHT}
+
+
+def _wert_unter_label(
+    words: List[Dict[str, Any]],
+    label: Dict[str, Any],
+    x_toleranz: float = 6.0,
+    y_min: float = 2.0,
+    y_max: float = 25.0,
+) -> Optional[str]:
+    """Sucht das Wort direkt unter einem Label (gleiche linke Kante, naechste Zeile)."""
+    kandidaten = [
+        w
+        for w in words
+        if label["bottom"] + y_min <= w["top"] <= label["bottom"] + y_max
+        and abs(w["x0"] - label["x0"]) <= x_toleranz
+    ]
+    if not kandidaten:
+        return None
+    kandidaten.sort(key=lambda w: w["top"])
+    return kandidaten[0]["text"]
+
+
+def extrahiere_beleg_und_datum(
+    pdf_bytes: bytes,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Liest Beleg-Nr. und Datum aus dem Kasten "Bei Zahlung bitte angeben"
+    (erste Seite): der Wert steht jeweils direkt unter dem gleich weit
+    links stehenden Label. Gibt (None, None) zurueck, wenn das Layout
+    nicht erkannt wird (z.B. andere Vorlage, gescannte/reine Bild-PDF)."""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if not pdf.pages:
+                return None, None
+            words = pdf.pages[0].extract_words()
+    except Exception:
+        return None, None
+
+    beleg_label = next(
+        (w for w in words if w["text"].startswith("Beleg-Nr")), None
+    )
+    if beleg_label is None:
+        return None, None
+
+    datum_label = next(
+        (
+            w
+            for w in words
+            if w["text"] == "Datum" and abs(w["top"] - beleg_label["top"]) < 2
+        ),
+        None,
+    )
+
+    beleg_nr = _wert_unter_label(words, beleg_label)
+    datum = _wert_unter_label(words, datum_label) if datum_label else None
+    return beleg_nr, datum
+
+
+_UNSICHERE_ZEICHEN = re.compile(r'[\\/:*?"<>|]+')
+
+
+def sicherer_pdf_dateiname(beleg_nr: Optional[str], fallback_dateiname: str) -> str:
+    """Baut aus der Beleg-Nr. einen Dateinamen (Fallback: Original-Dateiname,
+    falls die Beleg-Nr. nicht erkannt wurde)."""
+    basis = beleg_nr if beleg_nr else os.path.splitext(fallback_dateiname)[0]
+    basis = _UNSICHERE_ZEICHEN.sub("_", basis).strip("_") or "Beleg"
+    return f"{basis}.pdf"
 
 
 def _eindeutiger_dateiname(ziel_ordner: str, dateiname: str) -> str:
