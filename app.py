@@ -1,8 +1,9 @@
 """VW AI - Streamlit-Oberflaeche.
 
 Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
-(automatische Verarbeitung von Excel-Ladelisten) und "Reklamationen"
-(Ausfallfracht-Dashboard ueber Power Automate + SharePoint).
+(automatische Verarbeitung von Excel-Ladelisten), "Reklamationen"
+(Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung) und
+"Referenz" (Nachschlage-Liste der SLB-Referenznummern).
 """
 
 import io
@@ -24,6 +25,8 @@ from reklamation_lokal import (
     extrahiere_abholtag,
     extrahiere_beleg_und_datum,
     extrahiere_betrag,
+    extrahiere_firma,
+    extrahiere_referenznummern,
     guess_absender_betreff,
     guess_eingangsdatum,
     lade_excel,
@@ -302,34 +305,31 @@ def render_reklamationen_tab() -> None:
         '<span class="vwai-badge">✨ Ausfallfracht-Dashboard</span>',
         unsafe_allow_html=True,
     )
-    st.write(
-        "Ausfallfracht-/Storno-PDFs (Duvenbeck) hier per Drag & Drop hochladen. "
-        "PDF und Angaben werden automatisch im Basisordner erfasst."
-    )
 
-    basisordner = st.text_input(
-        "Basisordner (mit SharePoint/OneDrive synchronisiert)",
-        value=st.session_state.get(
-            "reklamationen_basisordner", lade_gespeicherten_basisordner()
-        ),
-        key="reklamationen_basisordner_input",
-    )
-    if st.button("Ordner merken", key="reklamationen_basisordner_speichern"):
-        speichere_basisordner(basisordner)
-        st.session_state["reklamationen_basisordner"] = basisordner
-        st.success("Ordner gemerkt - wird beim naechsten Start automatisch vorausgefuellt.")
+    with st.expander("Ordner-Einstellungen"):
+        basisordner = st.text_input(
+            "Basisordner (mit SharePoint/OneDrive synchronisiert)",
+            value=st.session_state.get(
+                "reklamationen_basisordner", lade_gespeicherten_basisordner()
+            ),
+            key="reklamationen_basisordner_input",
+        )
+        if st.button("Ordner merken", key="reklamationen_basisordner_speichern"):
+            speichere_basisordner(basisordner)
+            st.session_state["reklamationen_basisordner"] = basisordner
+            st.success("Ordner gemerkt - wird beim naechsten Start automatisch vorausgefuellt.")
 
-    archivordner = st.text_input(
-        "Archiv-Basisordner (Planung/Ladeliste/Avisierung, Jahr wird automatisch ergaenzt)",
-        value=st.session_state.get(
-            "reklamationen_archivordner", lade_gespeicherten_archivordner()
-        ),
-        key="reklamationen_archivordner_input",
-    )
-    if st.button("Archivordner merken", key="reklamationen_archivordner_speichern"):
-        speichere_archivordner(archivordner)
-        st.session_state["reklamationen_archivordner"] = archivordner
-        st.success("Archivordner gemerkt.")
+        archivordner = st.text_input(
+            "Archiv-Basisordner (Planung/Ladeliste/Avisierung, Jahr wird automatisch ergaenzt)",
+            value=st.session_state.get(
+                "reklamationen_archivordner", lade_gespeicherten_archivordner()
+            ),
+            key="reklamationen_archivordner_input",
+        )
+        if st.button("Archivordner merken", key="reklamationen_archivordner_speichern"):
+            speichere_archivordner(archivordner)
+            st.session_state["reklamationen_archivordner"] = archivordner
+            st.success("Archivordner gemerkt.")
 
     if not basisordner:
         st.info("Bitte oben einen Basisordner angeben.")
@@ -351,6 +351,15 @@ def render_reklamationen_tab() -> None:
         st.session_state["reklamationen_verarbeitete_uploads"] = set()
         st.session_state["reklamationen_geladener_ordner"] = basisordner
 
+    # Platzhalter fuer das Dashboard (Kennzahlen + Tabelle) - soll ueber
+    # dem Upload-Bereich erscheinen, wird aber erst weiter unten befuellt,
+    # nachdem neu hochgeladene PDFs verarbeitet wurden.
+    dashboard_platzhalter = st.container()
+
+    st.write(
+        "Ausfallfracht-/Storno-PDFs (Duvenbeck) hier per Drag & Drop hochladen. "
+        "PDF und Angaben werden automatisch im Basisordner erfasst."
+    )
     uploaded_pdfs = st.file_uploader(
         "PDFs hochladen (Ausfallfracht-Rechnungen oder Storno)",
         type=["pdf"],
@@ -374,6 +383,8 @@ def render_reklamationen_tab() -> None:
             gespeicherter_pfad = speichere_pdf(basisordner, neuer_dateiname, inhalt)
             eintrag = {
                 "Eingangsdatum": pdf_datum or guess_eingangsdatum(f.name),
+                "Abholtag": extrahiere_abholtag(inhalt) or "",
+                "Firma": extrahiere_firma(inhalt) or "",
                 "Dateiname_PDF": os.path.basename(gespeicherter_pfad),
                 "OneDrive_Pfad": gespeicherter_pfad,
                 "Betrag": extrahiere_betrag(inhalt) or "",
@@ -382,6 +393,7 @@ def render_reklamationen_tab() -> None:
                 "Prüfdatum": "",
                 "Ergebnis": "",
                 "Bemerkung": "",
+                "Referenznummern": ";".join(extrahiere_referenznummern(inhalt)),
             }
             eintrag.update(guess_absender_betreff(f.name))
             st.session_state["reklamationen_rows"].append(eintrag)
@@ -390,7 +402,7 @@ def render_reklamationen_tab() -> None:
             if beleg_nr is None:
                 nicht_erkannt.append(f.name)
 
-            abholtag = extrahiere_abholtag(inhalt)
+            abholtag = eintrag["Abholtag"]
             if beleg_nr and abholtag and archivordner:
                 fallordner, fehlend = erstelle_fallordner(
                     archivordner, basisordner, beleg_nr, abholtag, gespeicherter_pfad
@@ -427,59 +439,99 @@ def render_reklamationen_tab() -> None:
             st.info(meldung)
 
     rows = st.session_state["reklamationen_rows"]
-    if not rows:
-        st.info("Noch keine Reklamationen erfasst. Lade oben PDFs hoch.")
-        return
+    with dashboard_platzhalter:
+        if not rows:
+            st.info("Noch keine Reklamationen erfasst. Unten PDFs hochladen.")
+            return
 
-    df = pd.DataFrame(rows, columns=EXCEL_COLUMNS)
+        df = pd.DataFrame(rows, columns=EXCEL_COLUMNS)
 
-    status_counts = df["Status"].value_counts()
-    cols = st.columns(len(STATUS_OPTIONS))
-    for col, status in zip(cols, STATUS_OPTIONS):
-        col.metric(status, int(status_counts.get(status, 0)))
+        status_counts = df["Status"].value_counts()
+        ergebnis_counts = df["Ergebnis"].value_counts()
+        kennzahlen = [(s, int(status_counts.get(s, 0))) for s in STATUS_OPTIONS]
+        kennzahlen += [
+            ("Berechtigt", int(ergebnis_counts.get("Berechtigt", 0))),
+            ("Unberechtigt", int(ergebnis_counts.get("Unberechtigt", 0))),
+        ]
+        cols = st.columns(len(kennzahlen))
+        for col, (label, wert) in zip(cols, kennzahlen):
+            col.metric(label, wert)
 
-    ergebnis_counts = df["Ergebnis"].value_counts()
-    ergebnis_cols = st.columns(2)
-    ergebnis_cols[0].metric("Berechtigt", int(ergebnis_counts.get("Berechtigt", 0)))
-    ergebnis_cols[1].metric("Unberechtigt", int(ergebnis_counts.get("Unberechtigt", 0)))
+        edited_df = st.data_editor(
+            df,
+            key="reklamationen_editor",
+            num_rows="dynamic",
+            hide_index=True,
+            column_config={
+                "Dateiname_PDF": st.column_config.TextColumn(disabled=True),
+                "OneDrive_Pfad": st.column_config.TextColumn(disabled=True),
+                "Referenznummern": st.column_config.TextColumn(disabled=True),
+                "Zugewiesen": st.column_config.SelectboxColumn(
+                    "Zugewiesen", options=ZUGEWIESEN_OPTIONEN
+                ),
+                "Status": st.column_config.SelectboxColumn(
+                    "Status", options=STATUS_OPTIONS, required=True
+                ),
+                "Ergebnis": st.column_config.SelectboxColumn(
+                    "Ergebnis", options=ERGEBNIS_OPTIONEN
+                ),
+            },
+        )
 
-    edited_df = st.data_editor(
-        df,
-        key="reklamationen_editor",
-        num_rows="dynamic",
-        hide_index=True,
-        column_config={
-            "Dateiname_PDF": st.column_config.TextColumn(disabled=True),
-            "OneDrive_Pfad": st.column_config.TextColumn(disabled=True),
-            "Zugewiesen": st.column_config.SelectboxColumn(
-                "Zugewiesen", options=ZUGEWIESEN_OPTIONEN
-            ),
-            "Status": st.column_config.SelectboxColumn(
-                "Status", options=STATUS_OPTIONS, required=True
-            ),
-            "Ergebnis": st.column_config.SelectboxColumn(
-                "Ergebnis", options=ERGEBNIS_OPTIONEN
-            ),
-        },
+        if st.button("Änderungen speichern", key="reklamationen_save"):
+            neue_rows = edited_df.to_dict("records")
+            st.session_state["reklamationen_rows"] = neue_rows
+            try:
+                speichere_excel(pfad, neue_rows)
+                st.success("Gespeichert.")
+            except PermissionError:
+                st.error(
+                    f"`{os.path.basename(pfad)}` ist gerade geoeffnet (z.B. in "
+                    "Excel) und kann nicht gespeichert werden. Datei schliessen "
+                    "und nochmal auf 'Aenderungen speichern' klicken - deine "
+                    "Aenderungen sind bis dahin nicht verloren."
+                )
+
+
+def render_referenz_tab() -> None:
+    st.title("Referenz")
+    st.write(
+        "Nachschlage-Liste aller SLB-Referenznummern aus den im Reiter "
+        "Reklamationen erfassten Rechnungen."
     )
 
-    if st.button("Änderungen speichern", key="reklamationen_save"):
-        neue_rows = edited_df.to_dict("records")
-        st.session_state["reklamationen_rows"] = neue_rows
-        try:
-            speichere_excel(pfad, neue_rows)
-            st.success("Gespeichert.")
-        except PermissionError:
-            st.error(
-                f"`{os.path.basename(pfad)}` ist gerade geoeffnet (z.B. in "
-                "Excel) und kann nicht gespeichert werden. Datei schliessen "
-                "und nochmal auf 'Aenderungen speichern' klicken - deine "
-                "Aenderungen sind bis dahin nicht verloren."
+    rows = st.session_state.get("reklamationen_rows", [])
+    eintraege = []
+    for row in rows:
+        nummern = [n for n in (row.get("Referenznummern") or "").split(";") if n]
+        for nummer in nummern:
+            eintraege.append(
+                {
+                    "Referenznummer": nummer,
+                    "Beleg-Nr": os.path.splitext(row.get("Dateiname_PDF") or "")[0],
+                    "Firma": row.get("Firma") or "",
+                    "Betreff": row.get("Betreff") or "",
+                    "Eingangsdatum": row.get("Eingangsdatum") or "",
+                }
             )
 
+    if not eintraege:
+        st.info(
+            "Noch keine Referenznummern erfasst - werden automatisch aus "
+            "hochgeladenen Rechnungen im Reiter Reklamationen uebernommen."
+        )
+        return
 
-tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
-    ["Start", "Ladelisten", "Reklamationen"]
+    df = pd.DataFrame(eintraege)
+    suche = st.text_input("Suche nach Referenznummer", key="referenz_suche")
+    if suche:
+        df = df[df["Referenznummer"].str.contains(suche, case=False, na=False)]
+
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+tab_start, tab_ladelisten, tab_reklamationen, tab_referenz = st.tabs(
+    ["Start", "Ladelisten", "Reklamationen", "Referenz"]
 )
 
 with tab_start:
@@ -490,3 +542,6 @@ with tab_ladelisten:
 
 with tab_reklamationen:
     render_reklamationen_tab()
+
+with tab_referenz:
+    render_referenz_tab()

@@ -8,10 +8,11 @@ in einem frei waehlbaren Basisordner (z.B. einem SharePoint/OneDrive-
 synchronisierten Ordner), kein Power-Automate/SharePoint-Setup noetig.
 
 Excel-Spalten und Blattname basieren auf der vom Nutzer vorgegebenen
-Vorlage (VW_Reklamationen.xlsx, Blatt "Tabelle1"), ergaenzt um Betrag
-und Zugewiesen: Eingangsdatum, Absender, Betreff, Dateiname_PDF,
-OneDrive_Pfad, Betrag, Zugewiesen, Status, Pruefdatum, Ergebnis,
-Bemerkung.
+Vorlage (VW_Reklamationen.xlsx, Blatt "Tabelle1"), erweitert um
+Abholtag, Firma, Betrag, Zugewiesen und Referenznummern: Eingangsdatum,
+Abholtag, Firma, Absender, Betreff, Dateiname_PDF, OneDrive_Pfad,
+Betrag, Zugewiesen, Status, Pruefdatum, Ergebnis, Bemerkung,
+Referenznummern.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from openpyxl import Workbook, load_workbook
 SHEET_NAME = "Tabelle1"
 EXCEL_COLUMNS = [
     "Eingangsdatum",
+    "Abholtag",
+    "Firma",
     "Absender",
     "Betreff",
     "Dateiname_PDF",
@@ -39,8 +42,9 @@ EXCEL_COLUMNS = [
     "Prüfdatum",
     "Ergebnis",
     "Bemerkung",
+    "Referenznummern",
 ]
-EXCEL_SPALTENBREITEN = [16, 28, 40, 18, 45, 14, 16, 16, 14, 14, 30]
+EXCEL_SPALTENBREITEN = [16, 14, 16, 22, 26, 18, 45, 14, 16, 16, 14, 14, 30, 24]
 
 ZUGEWIESEN_OPTIONEN = ["", "Murat Kurt", "Okan Kocak", "Alperen Konar", "Levin Akarcay"]
 ERGEBNIS_OPTIONEN = ["", "Berechtigt", "Unberechtigt"]
@@ -70,10 +74,9 @@ PLANUNGSDATEI_TYPEN = {
     "Avisierung": "VW_Avisierung",
 }
 
-ABSENDER_AUSFALLFRACHT = "noreply@duvenbeck.de"
-BETREFF_AUSFALLFRACHT = "Rechnung Ausfallfracht zu Frachtbrief"
-ABSENDER_STORNO = "ausfallfrachten-herne@duvenbeck.de"
-BETREFF_STORNO = "Storno Ausfallfracht zu Frachtbrief"
+ABSENDER_DUVENBECK = "Duvenbeck"
+BETREFF_AUSFALLFRACHT = "Ausfallfracht Rechnung"
+BETREFF_STORNO = "Ausfallfracht Storno"
 
 _DATUM_MUSTER = re.compile(r"(20\d{2})(\d{2})(\d{2})")
 
@@ -135,9 +138,8 @@ def guess_eingangsdatum(dateiname: str) -> str:
 
 def guess_absender_betreff(dateiname: str) -> Dict[str, str]:
     """Raet Absender/Betreff anhand des Dateinamens (Storno vs. Rechnung)."""
-    if "storno" in dateiname.lower():
-        return {"Absender": ABSENDER_STORNO, "Betreff": BETREFF_STORNO}
-    return {"Absender": ABSENDER_AUSFALLFRACHT, "Betreff": BETREFF_AUSFALLFRACHT}
+    betreff = BETREFF_STORNO if "storno" in dateiname.lower() else BETREFF_AUSFALLFRACHT
+    return {"Absender": ABSENDER_DUVENBECK, "Betreff": betreff}
 
 
 def _wert_unter_label(
@@ -240,6 +242,44 @@ def extrahiere_betrag(pdf_bytes: bytes) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+_FIRMA_MUSTER = re.compile(r"Empf[aä]nger\s*:\s*(.+?)\s*\.\s*[A-Z]{2}[-\s]")
+
+
+def extrahiere_firma(pdf_bytes: bytes) -> Optional[str]:
+    """Liest die Empfaenger-Firma (z.B. "Skoda Auto a.s.") aus dem
+    Fliesstext. Durchsucht alle Seiten, gibt None zurueck wenn nicht
+    gefunden."""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                match = _FIRMA_MUSTER.search(text)
+                if match:
+                    return match.group(1).strip()
+    except Exception:
+        return None
+    return None
+
+
+_REFERENZ_MUSTER = re.compile(r"Nummer:\s*\n?\s*([\d;]+)")
+
+
+def extrahiere_referenznummern(pdf_bytes: bytes) -> List[str]:
+    """Liest die SLB-Referenznummern (z.B. unter "SLB\\nNummer:") - eine
+    durch Semikolon getrennte Liste von Nummern. Durchsucht alle Seiten,
+    gibt eine leere Liste zurueck wenn nichts gefunden wird."""
+    try:
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                match = _REFERENZ_MUSTER.search(text)
+                if match:
+                    return [n for n in match.group(1).split(";") if n]
+    except Exception:
+        return []
+    return []
 
 
 def archiv_monatsordner(archiv_basisordner_vorlage: str, abholtag: str) -> str:

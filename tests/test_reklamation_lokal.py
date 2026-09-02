@@ -106,6 +106,35 @@ def test_extrahiere_betrag_ohne_endbetrag_gibt_none():
     assert rl.extrahiere_betrag(pdf_bytes) is None
 
 
+def test_extrahiere_firma_erkennt_empfaenger():
+    pdf_bytes = _baue_test_pdf_mit_text(
+        "Absender : Norm Fasteners GmbH . D-47807 Krefeld\n"
+        "Empfänger : Skoda Auto a.s. . CZ-293 60 Mlada Boleslav"
+    )
+    assert rl.extrahiere_firma(pdf_bytes) == "Skoda Auto a.s."
+
+
+def test_extrahiere_firma_ohne_muster_gibt_none():
+    pdf_bytes = _baue_test_pdf_mit_text("Kein Empfaenger-Feld hier.")
+    assert rl.extrahiere_firma(pdf_bytes) is None
+
+
+def test_extrahiere_referenznummern_erkennt_liste():
+    pdf_bytes = _baue_test_pdf_mit_text(
+        "irgendwas SLB\nNummer:\n00330537;00330579;00330535"
+    )
+    assert rl.extrahiere_referenznummern(pdf_bytes) == [
+        "00330537",
+        "00330579",
+        "00330535",
+    ]
+
+
+def test_extrahiere_referenznummern_ohne_muster_gibt_leere_liste():
+    pdf_bytes = _baue_test_pdf_mit_text("Keine Nummer hier.")
+    assert rl.extrahiere_referenznummern(pdf_bytes) == []
+
+
 def test_zugewiesen_und_ergebnis_optionen_enthalten_erwartete_werte():
     assert rl.ZUGEWIESEN_OPTIONEN == [
         "",
@@ -196,7 +225,7 @@ def test_guess_eingangsdatum_ohne_muster_faellt_auf_heute_zurueck():
 def test_guess_absender_betreff_rechnung():
     result = rl.guess_absender_betreff("Ausfallfracht_20260305.pdf")
     assert result == {
-        "Absender": rl.ABSENDER_AUSFALLFRACHT,
+        "Absender": rl.ABSENDER_DUVENBECK,
         "Betreff": rl.BETREFF_AUSFALLFRACHT,
     }
 
@@ -204,7 +233,7 @@ def test_guess_absender_betreff_rechnung():
 def test_guess_absender_betreff_storno_case_insensitive():
     result = rl.guess_absender_betreff("STORNO_Ausfallfracht_20260313.pdf")
     assert result == {
-        "Absender": rl.ABSENDER_STORNO,
+        "Absender": rl.ABSENDER_DUVENBECK,
         "Betreff": rl.BETREFF_STORNO,
     }
 
@@ -246,8 +275,10 @@ def test_speichere_und_lade_excel_roundtrip(tmp_path):
     rows = [
         {
             "Eingangsdatum": "05.03.2026",
-            "Absender": "noreply@duvenbeck.de",
-            "Betreff": "Rechnung Ausfallfracht zu Frachtbrief",
+            "Abholtag": "01.03.2026",
+            "Firma": "Skoda Auto a.s.",
+            "Absender": "Duvenbeck",
+            "Betreff": "Ausfallfracht Rechnung",
             "Dateiname_PDF": "Ausfallfracht_20260305.pdf",
             "OneDrive_Pfad": r"C:\Basis\Rechnungen_PDF\Ausfallfracht_20260305.pdf",
             "Betrag": "394,00 EUR",
@@ -256,6 +287,7 @@ def test_speichere_und_lade_excel_roundtrip(tmp_path):
             "Prüfdatum": "",
             "Ergebnis": "",
             "Bemerkung": "",
+            "Referenznummern": "00330537;00330579",
         }
     ]
     rl.speichere_excel(pfad, rows)
