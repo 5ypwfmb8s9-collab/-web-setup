@@ -387,7 +387,7 @@ def render_reklamationen_tab() -> None:
 
 
 tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
-    ["✨ Start", "📦 Ladelisten", "📋 Reklamationen"]
+    ["Start", "Ladelisten", "Reklamationen"]
 )
 
 with tab_start:
