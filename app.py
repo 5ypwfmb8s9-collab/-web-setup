@@ -305,6 +305,15 @@ def render_reklamationen_tab() -> None:
         unsafe_allow_html=True,
     )
 
+    if os.name != "nt":
+        st.info(
+            "Reklamationen ist nur in der lokal installierten Version "
+            "verfuegbar (greift auf einen Windows-/OneDrive-Ordner zu, den "
+            "eine zentral gehostete Version nicht erreichen kann). Bitte "
+            "dafuer die lokale Installation auf einem Windows-PC nutzen."
+        )
+        return
+
     with st.expander("Ordner-Einstellungen"):
         basisordner = st.text_input(
             "Basisordner (mit SharePoint/OneDrive synchronisiert)",

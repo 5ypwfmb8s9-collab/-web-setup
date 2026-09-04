@@ -49,6 +49,13 @@ Ausgabedatei um zwei weitere Blaetter ergaenzt:
 
 ## Reiter: Reklamationen (Ausfallfracht)
 
+**Nur lokal auf Windows verfuegbar** (nicht auf einer zentral gehosteten
+Version, z.B. Streamlit Community Cloud): der Reiter greift auf einen
+Windows-/OneDrive-Ordner zu, den ein Cloud-Container nicht erreichen
+kann. Auf einem nicht-Windows-System zeigt der Reiter stattdessen nur
+einen Hinweis. Der Reiter **Ladelisten** hat diese Einschraenkung nicht
+und funktioniert ueberall gleich (reiner Datei-Upload/-Download).
+
 Ausfallfracht-/Storno-PDFs (Duvenbeck) werden per Drag & Drop hochgeladen:
 
 1. Einmalig einen **Basisordner** angeben (z.B. ein mit SharePoint/OneDrive
@@ -117,6 +124,23 @@ beschreiben einen Weg ueber Power-Automate-Flows, die Mails automatisch aus
 einem Postfach in eine SharePoint-Liste erfassen (aktuell nicht in der
 Oberflaeche verdrahtet, aber fertig getestet und nutzbar als Grundlage,
 falls das spaeter gewuenscht ist).
+
+## Zentral hosten (Streamlit Community Cloud)
+
+Fuer Kollegen zugaenglich machen, ohne dass jeder Python lokal
+installieren muss (Ladelisten funktioniert dort voll, Reklamationen
+zeigt nur den Hinweis oben):
+
+1. Auf [share.streamlit.io](https://share.streamlit.io) mit dem
+   GitHub-Konto anmelden, das Zugriff auf dieses Repo hat.
+2. "New app" -> Repo/Branch (`claude/ladelisten-automation-tool-ka06mv`
+   oder den Ziel-Branch) und `app.py` als Startdatei auswaehlen ->
+   "Deploy".
+3. Nach dem ersten Deploy: App-Einstellungen -> "Sharing" ->
+   "This app is not public" -> die E-Mail-Adressen der Kollegen
+   eintragen, die Zugriff bekommen sollen (Login per Google-Konto beim
+   Aufruf). Ohne diesen Schritt waere die App fuer jeden mit dem Link
+   sichtbar.
 
 ## Start
 
