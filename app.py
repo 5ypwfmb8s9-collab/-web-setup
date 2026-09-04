@@ -99,6 +99,96 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+LOGIN_HERO_HTML = """
+<div style="position:relative;width:100%;height:260px;background:#000;
+            border-radius:18px;overflow:hidden;font-family:sans-serif;">
+  <canvas id="vwai-login-particles" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
+  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
+    <div style="font-size:88px;font-weight:800;letter-spacing:2px;
+                background:linear-gradient(90deg,#8B5CF6,#3B82F6,#EC4899,#8B5CF6);
+                background-size:300% 300%;
+                animation:login-hero-shimmer 6s ease infinite;
+                -webkit-background-clip:text;background-clip:text;color:transparent;">
+      VW AI
+    </div>
+  </div>
+</div>
+<style>
+  @keyframes login-hero-shimmer {
+      0%   { background-position: 0% 50%; }
+      50%  { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+  }
+</style>
+<script>
+  const loginCanvas = document.getElementById('vwai-login-particles');
+  const loginCtx = loginCanvas.getContext('2d');
+
+  function loginResize() {
+      loginCanvas.width = loginCanvas.clientWidth;
+      loginCanvas.height = loginCanvas.clientHeight;
+  }
+  loginResize();
+  window.addEventListener('resize', loginResize);
+
+  const LOGIN_N = 55;
+  const loginPts = Array.from({length: LOGIN_N}, () => ({
+      x: Math.random() * loginCanvas.width,
+      y: Math.random() * loginCanvas.height,
+      vx: (Math.random() - 0.5) * 0.25,
+      vy: (Math.random() - 0.5) * 0.25,
+      r: 1.4 + Math.random() * 2.2,
+      gruen: Math.random() < 0.12,
+  }));
+
+  function loginTick() {
+      loginCtx.clearRect(0, 0, loginCanvas.width, loginCanvas.height);
+
+      for (const p of loginPts) {
+          p.x += p.vx;
+          p.y += p.vy;
+          if (p.x < 0 || p.x > loginCanvas.width) p.vx *= -1;
+          if (p.y < 0 || p.y > loginCanvas.height) p.vy *= -1;
+      }
+
+      for (let i = 0; i < LOGIN_N; i++) {
+          for (let j = i + 1; j < LOGIN_N; j++) {
+              const dx = loginPts[i].x - loginPts[j].x;
+              const dy = loginPts[i].y - loginPts[j].y;
+              const d = Math.sqrt(dx * dx + dy * dy);
+              if (d < 100) {
+                  loginCtx.strokeStyle = `rgba(150,150,190,${1 - d / 100})`;
+                  loginCtx.lineWidth = 1;
+                  loginCtx.beginPath();
+                  loginCtx.moveTo(loginPts[i].x, loginPts[i].y);
+                  loginCtx.lineTo(loginPts[j].x, loginPts[j].y);
+                  loginCtx.stroke();
+              }
+          }
+      }
+
+      for (const p of loginPts) {
+          loginCtx.beginPath();
+          loginCtx.arc(p.x, p.y, p.gruen ? p.r + 1.2 : p.r, 0, Math.PI * 2);
+          if (p.gruen) {
+              loginCtx.shadowColor = 'rgba(34,197,94,0.9)';
+              loginCtx.shadowBlur = 8;
+              loginCtx.fillStyle = '#22c55e';
+          } else {
+              loginCtx.shadowBlur = 0;
+              loginCtx.fillStyle = 'rgba(225,225,255,0.9)';
+          }
+          loginCtx.fill();
+      }
+      loginCtx.shadowBlur = 0;
+
+      requestAnimationFrame(loginTick);
+  }
+  loginTick();
+</script>
+"""
+
+
 def _pruefe_login() -> bool:
     """Zeigt bei Bedarf einen Login-Bildschirm und gibt True zurueck, sobald
     ein gueltiger Benutzername/Passwort eingegeben wurde. Die Zugangsdaten
@@ -110,14 +200,7 @@ def _pruefe_login() -> bool:
 
     _, mitte, _ = st.columns([1, 1.2, 1])
     with mitte:
-        st.markdown(
-            "<div style='text-align:center;font-size:40px;font-weight:800;"
-            "background:linear-gradient(90deg,#8B5CF6,#3B82F6,#EC4899,#8B5CF6);"
-            "background-size:300% 300%;-webkit-background-clip:text;"
-            "background-clip:text;color:transparent;margin-bottom:6px;'>"
-            "VW AI</div>",
-            unsafe_allow_html=True,
-        )
+        components.html(LOGIN_HERO_HTML, height=280, scrolling=False)
         st.markdown(
             "<p style='text-align:center;color:#8a8a95;'>Bitte anmelden.</p>",
             unsafe_allow_html=True,
