@@ -226,10 +226,53 @@ def _pruefe_login() -> bool:
         erwartetes_passwort = hinterlegte_zugangsdaten.get(benutzername, "")
         if erwartetes_passwort and hmac.compare_digest(passwort, erwartetes_passwort):
             st.session_state["auth_benutzer"] = benutzername
+            st.session_state["gerade_eingeloggt"] = True
             st.rerun()
         else:
             st.error("Benutzername oder Passwort falsch.")
         return False
+
+
+INTRO_UEBERGANG_HTML = """
+<style>
+@keyframes vwai-intro-pop {
+    0%   { transform: scale(1); }
+    55%  { transform: scale(16); }
+    100% { transform: scale(30); }
+}
+@keyframes vwai-intro-fade {
+    0%   { opacity: 1; }
+    75%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+#vwai-intro-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 999999;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    animation: vwai-intro-fade 1.2s ease forwards;
+}
+#vwai-intro-overlay span {
+    display: inline-block;
+    font-size: 64px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    background: linear-gradient(90deg, #8B5CF6, #3B82F6, #EC4899, #8B5CF6);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation:
+        vwai-intro-pop 1.2s cubic-bezier(.25,.85,.3,1) forwards,
+        copilot-shimmer 1.2s ease infinite;
+}
+</style>
+<div id="vwai-intro-overlay"><span>VW AI</span></div>
+"""
 
 
 HERO_HTML = """
@@ -652,6 +695,9 @@ def render_reklamationen_tab() -> None:
 
 if not _pruefe_login():
     st.stop()
+
+if st.session_state.pop("gerade_eingeloggt", False):
+    st.markdown(INTRO_UEBERGANG_HTML, unsafe_allow_html=True)
 
 with st.sidebar:
     st.write(f"Eingeloggt als **{st.session_state['auth_benutzer']}**")
