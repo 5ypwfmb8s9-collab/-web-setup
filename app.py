@@ -5,6 +5,7 @@ Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
 (Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung).
 """
 
+import hmac
 import io
 import os
 from datetime import date
@@ -97,6 +98,56 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+def _pruefe_login() -> bool:
+    """Zeigt bei Bedarf einen Login-Bildschirm und gibt True zurueck, sobald
+    ein gueltiger Benutzername/Passwort eingegeben wurde. Die Zugangsdaten
+    stehen in st.secrets["passwords"] (Streamlit Cloud: Settings -> Secrets;
+    lokal: .streamlit/secrets.toml, nicht im Git) - nie im Code oder Repo.
+    """
+    if st.session_state.get("auth_benutzer"):
+        return True
+
+    _, mitte, _ = st.columns([1, 1.2, 1])
+    with mitte:
+        st.markdown(
+            "<div style='text-align:center;font-size:40px;font-weight:800;"
+            "background:linear-gradient(90deg,#8B5CF6,#3B82F6,#EC4899,#8B5CF6);"
+            "background-size:300% 300%;-webkit-background-clip:text;"
+            "background-clip:text;color:transparent;margin-bottom:6px;'>"
+            "VW AI</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='text-align:center;color:#8a8a95;'>Bitte anmelden.</p>",
+            unsafe_allow_html=True,
+        )
+        with st.form("login_formular"):
+            benutzername = st.text_input("Benutzername")
+            passwort = st.text_input("Passwort", type="password")
+            abgeschickt = st.form_submit_button("Anmelden")
+
+        if not abgeschickt:
+            return False
+
+        hinterlegte_zugangsdaten = st.secrets.get("passwords", {})
+        if not hinterlegte_zugangsdaten:
+            st.error(
+                "Kein Login eingerichtet. Unter Streamlit Cloud -> App -> "
+                "Settings -> Secrets muss ein Abschnitt [passwords] mit "
+                "Benutzername/Passwort-Paaren hinterlegt werden (siehe "
+                ".streamlit/secrets.toml.example)."
+            )
+            return False
+
+        erwartetes_passwort = hinterlegte_zugangsdaten.get(benutzername, "")
+        if erwartetes_passwort and hmac.compare_digest(passwort, erwartetes_passwort):
+            st.session_state["auth_benutzer"] = benutzername
+            st.rerun()
+        else:
+            st.error("Benutzername oder Passwort falsch.")
+        return False
+
 
 HERO_HTML = """
 <div style="position:relative;width:100%;height:420px;background:#000;
@@ -515,6 +566,15 @@ def render_reklamationen_tab() -> None:
                     "Aenderungen sind bis dahin nicht verloren."
                 )
 
+
+if not _pruefe_login():
+    st.stop()
+
+with st.sidebar:
+    st.write(f"Eingeloggt als **{st.session_state['auth_benutzer']}**")
+    if st.button("Abmelden"):
+        del st.session_state["auth_benutzer"]
+        st.rerun()
 
 tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
     ["Start", "Ladelisten", "Reklamationen"]

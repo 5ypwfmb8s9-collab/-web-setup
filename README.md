@@ -136,11 +136,19 @@ zeigt nur den Hinweis oben):
 2. "New app" -> Repo/Branch (`claude/ladelisten-automation-tool-ka06mv`
    oder den Ziel-Branch) und `app.py` als Startdatei auswaehlen ->
    "Deploy".
-3. Nach dem ersten Deploy: App-Einstellungen -> "Sharing" ->
-   "This app is not public" -> die E-Mail-Adressen der Kollegen
-   eintragen, die Zugriff bekommen sollen (Login per Google-Konto beim
-   Aufruf). Ohne diesen Schritt waere die App fuer jeden mit dem Link
-   sichtbar.
+3. Nach dem ersten Deploy: App-Einstellungen -> "Secrets" -> den Inhalt
+   von `.streamlit/secrets.toml.example` einfuegen und im Abschnitt
+   `[passwords]` fuer jeden Benutzer ein echtes Passwort eintragen
+   (nicht die Platzhalter). Diese Secrets landen nur bei Streamlit
+   Cloud, nie im Git-Repo.
+
+Die App selbst bleibt unter "Sharing" auf "public" (jeder mit dem Link
+kann die Login-Seite oeffnen), der eigentliche Zugriffsschutz passiert
+im Code: `app.py` zeigt vor allen Reitern einen Login-Bildschirm
+(Benutzername/Passwort gegen `st.secrets["passwords"]`) und laesst erst
+nach erfolgreichem Login etwas sehen. Ohne eingerichtete Secrets zeigt
+die App eine Fehlermeldung statt Zugriff zu gewaehren (sicherer
+Default). Ein "Abmelden"-Button steht in der Seitenleiste.
 
 ## Start
 
