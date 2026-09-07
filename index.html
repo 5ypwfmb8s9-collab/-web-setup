@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="GÜLYABANI — Ein Survival-Horror-Ego-Shooter. Acht Kugeln. Eine Tür. Etwas geht hinter dir.">
+<title>GÜLYABANI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700;900&family=Barlow+Condensed:wght@300;400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="gl"></canvas>
+
+  <!-- ============================ HUD ============================ -->
+  <div id="hud" class="hidden">
+    <div id="crosshair"><i class="ch ch-t"></i><i class="ch ch-b"></i><i class="ch ch-l"></i><i class="ch ch-r"></i><i class="ch-dot"></i></div>
+
+    <div id="hud-vignette"></div>
+
+    <!-- bottom-left: state -->
+    <div id="hud-left">
+      <div class="meter" id="m-stamina"><label>NEFES</label><div class="bar"><div class="fill" style="--c:#7fb0c8"></div></div></div>
+      <div class="meter" id="m-sanity"><label>AKIL</label><div class="bar"><div class="fill" style="--c:#c8735f"></div></div></div>
+      <div class="meter" id="m-battery"><label>FENER</label><div class="bar"><div class="fill" style="--c:#d8bd7a"></div></div></div>
+    </div>
+
+    <!-- bottom-right: ammo -->
+    <div id="hud-right">
+      <div id="stones"><span class="ico">◍</span><span id="stone-count">3</span></div>
+      <div id="ammo">
+        <div id="ammo-pips"></div>
+        <div id="ammo-num"><b>8</b><s>/8</s></div>
+        <div id="ammo-label">9×19 · SUSTURUCU</div>
+      </div>
+    </div>
+
+    <!-- top-left: objective -->
+    <div id="hud-obj">
+      <div class="obj-title">GÖREV</div>
+      <div class="obj-line" id="obj-text">Üç muskayı bul — Finde die drei Amulette</div>
+      <div id="muskas"><i></i><i></i><i></i></div>
+    </div>
+
+    <!-- top-right: compass / timer -->
+    <div id="hud-top">
+      <div id="timer">00:00</div>
+      <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
+    </div>
+
+    <!-- proximity warning -->
+    <div id="danger"></div>
+    <div id="dir-indicator"></div>
+
+    <!-- prompts & subtitles -->
+    <div id="prompt" class="hidden"><b>E</b><span></span></div>
+    <div id="subs"></div>
+    <div id="toasts"></div>
+
+    <!-- grab QTE -->
+    <div id="qte" class="hidden">
+      <div class="qte-key">BOŞLUK</div>
+      <div class="qte-txt">HÄMMERE DIE LEERTASTE</div>
+      <div class="qte-bar"><div class="qte-fill"></div></div>
+    </div>
+  </div>
+
+  <!-- ======================= NOTE READER ======================= -->
+  <div id="note" class="overlay hidden">
+    <div class="paper">
+      <h3 id="note-title"></h3>
+      <div id="note-body"></div>
+      <div class="paper-foot">[ E ] schließen</div>
+    </div>
+  </div>
+
+  <!-- ========================== MENUS ========================== -->
+  <div id="menu" class="overlay">
+    <div class="bg-grain"></div>
+    <div class="menu-inner">
+      <div class="brand">
+        <div class="brand-sub">ANADOLU KARANLIĞI</div>
+        <h1 class="title" data-text="GÜLYABANI">GÜLYABANI</h1>
+        <div class="brand-rule"></div>
+        <div class="tagline">Acht Kugeln. Eine Tür. Etwas geht hinter dir.</div>
+      </div>
+
+      <div class="panes">
+        <div class="pane pane-main" id="pane-main">
+          <button class="btn primary" id="btn-play">SPIEL STARTEN</button>
+          <button class="btn" id="btn-howto">STEUERUNG &amp; REGELN</button>
+          <button class="btn" id="btn-settings">EINSTELLUNGEN</button>
+          <button class="btn" id="btn-lore">DIE LEGENDE</button>
+          <div class="diffbox">
+            <span>SCHWIERIGKEIT</span>
+            <div class="seg" id="seg-diff">
+              <button data-v="0">KORKU</button>
+              <button data-v="1" class="on">DEHŞET</button>
+              <button data-v="2">KÂBUS</button>
+            </div>
+            <div class="diff-desc" id="diff-desc">Der Geist ist schnell. Standard-Erfahrung.</div>
+          </div>
+          <div class="best" id="best-line"></div>
+        </div>
+
+        <div class="pane hidden" id="pane-howto">
+          <h2>STEUERUNG</h2>
+          <div class="keys">
+            <div><b>W A S D</b><span>Bewegen</span></div>
+            <div><b>MAUS</b><span>Umsehen</span></div>
+            <div><b>UMSCH</b><span>Sprinten (kostet Nefes)</span></div>
+            <div><b>STRG / C</b><span>Ducken — leise</span></div>
+            <div><b>LMT</b><span>Schießen</span></div>
+            <div><b>RMT</b><span>Kimme &amp; Korn (Kopfschuss)</span></div>
+            <div><b>F</b><span>Taschenlampe</span></div>
+            <div><b>G</b><span>Stein werfen — lenkt ab</span></div>
+            <div><b>E</b><span>Benutzen / Tür / Aufheben</span></div>
+            <div><b>Q</b><span>Muska spüren (kostet Akıl)</span></div>
+            <div><b>LEERTASTE</b><span>Losreißen beim Griff</span></div>
+            <div><b>ESC / P</b><span>Pause</span></div>
+          </div>
+          <h2>REGELN</h2>
+          <ul class="rules">
+            <li><b>Acht Patronen.</b> Mehr gibt es nicht. Keine Nachladung, kein Fund.</li>
+            <li><b>Nur der Kopf zählt.</b> Körpertreffer gehen durch ihn hindurch wie durch Rauch.</li>
+            <li><b>Jeder Kopfschuss</b> reißt ihn zurück, verlangsamt ihn dauerhaft und schenkt dir Vorsprung.</li>
+            <li><b>Die Taschenlampe</b> zeigt dir den Weg — und ihm dich. Er wird schneller im Licht.</li>
+            <li><b>Türen</b> halten ihn kurz auf. Er bricht sie. Laut.</li>
+            <li><b>Drei Muskalar</b> brechen das Siegel der Ausgangstür.</li>
+          </ul>
+          <button class="btn back">ZURÜCK</button>
+        </div>
+
+        <div class="pane hidden" id="pane-settings">
+          <h2>EINSTELLUNGEN</h2>
+          <div class="setting"><label>Mausempfindlichkeit</label><input type="range" id="s-sens" min="20" max="400" value="130"><output>1.30</output></div>
+          <div class="setting"><label>Sichtfeld (FOV)</label><input type="range" id="s-fov" min="65" max="100" value="78"><output>78</output></div>
+          <div class="setting"><label>Helligkeit</label><input type="range" id="s-bright" min="50" max="200" value="100"><output>1.00</output></div>
+          <div class="setting"><label>Lautstärke</label><input type="range" id="s-vol" min="0" max="100" value="80"><output>80</output></div>
+          <div class="setting"><label>Auflösungsskala</label><input type="range" id="s-scale" min="60" max="180" value="100"><output>1.00</output></div>
+          <div class="setting row"><label>Grafikqualität</label>
+            <div class="seg" id="seg-qual"><button data-v="0">NIEDRIG</button><button data-v="1" class="on">HOCH</button><button data-v="2">ULTRA</button></div>
+          </div>
+          <div class="setting row"><label>Filmkorn &amp; Linse</label>
+            <div class="seg" id="seg-grain"><button data-v="0">AUS</button><button data-v="1" class="on">AN</button></div>
+          </div>
+          <div class="setting row"><label>Bildschirmschütteln</label>
+            <div class="seg" id="seg-shake"><button data-v="0">AUS</button><button data-v="1" class="on">AN</button></div>
+          </div>
+          <div class="setting row"><label>Untertitel</label>
+            <div class="seg" id="seg-subs"><button data-v="0">AUS</button><button data-v="1" class="on">AN</button></div>
+          </div>
+          <button class="btn back">ZURÜCK</button>
+        </div>
+
+        <div class="pane hidden" id="pane-lore">
+          <h2>GÜLYABANI</h2>
+          <p class="lore">In den Bergen Anatoliens erzählt man sich von einer Gestalt, die zwischen Mitternacht und dem ersten Gebet über verlassene Wege geht. Groß wie zwei Männer, in Fell und Ketten, mit einem Stock, der auf den Stein schlägt. <i>Gülyabani.</i></p>
+          <p class="lore">Er geht niemals vor dir. Er geht immer hinter dir. Wer sich umdreht, verliert den Weg. Wer rennt, wird müde. Wer stehenbleibt, hört den Atem.</p>
+          <p class="lore">Blei kann ihm nichts anhaben, sagen die Alten — außer, es trifft ihn zwischen die Augen. Dann heult er, weicht zurück und wird für eine Weile langsam wie ein alter Mann. Aber er hört nicht auf.</p>
+          <p class="lore">Drei Muskalar, in Leder genäht und mit dem Gebet des Reisenden beschrieben, brechen das Siegel eines Hauses. Finde sie. Finde die Tür. Und dreh dich nicht öfter um, als du musst.</p>
+          <button class="btn back">ZURÜCK</button>
+        </div>
+      </div>
+
+      <div class="foot">
+        <span id="warn-gl"></span>
+        <span class="hint">Kopfhörer empfohlen · Vollbild empfohlen · Querformat</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay hidden">
+    <div class="menu-inner narrow">
+      <h1 class="title small" data-text="PAUSE">PAUSE</h1>
+      <div class="pane">
+        <button class="btn primary" id="btn-resume">WEITER</button>
+        <button class="btn" id="btn-settings2">EINSTELLUNGEN</button>
+        <button class="btn danger" id="btn-quit">AUFGEBEN</button>
+        <div class="run-stats" id="pause-stats"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="dead" class="overlay hidden">
+    <div class="menu-inner narrow">
+      <div class="death-mark">﷽</div>
+      <h1 class="title small dead-title" data-text="ER HAT DICH">ER HAT DICH</h1>
+      <div class="dead-sub" id="dead-sub">Gülyabani seni aldı.</div>
+      <div class="run-stats" id="dead-stats"></div>
+      <button class="btn primary" id="btn-retry">NOCH EINMAL</button>
+      <button class="btn" id="btn-menu">HAUPTMENÜ</button>
+    </div>
+  </div>
+
+  <div id="win" class="overlay hidden">
+    <div class="menu-inner narrow">
+      <h1 class="title small win-title" data-text="DRAUSSEN">DRAUSSEN</h1>
+      <div class="dead-sub">Die Morgendämmerung riecht nach nassem Stein.</div>
+      <div class="run-stats" id="win-stats"></div>
+      <button class="btn primary" id="btn-again">NOCH EINMAL</button>
+      <button class="btn" id="btn-menu2">HAUPTMENÜ</button>
+    </div>
+  </div>
+
+  <div id="loading" class="overlay hidden">
+    <div class="load-inner">
+      <div class="load-title">GÜLYABANI</div>
+      <div class="load-bar"><div class="load-fill"></div></div>
+      <div class="load-txt">Der Konak wird gebaut…</div>
+    </div>
+  </div>
+
+  <div id="rotate" class="overlay hidden">
+    <div class="rot-inner"><div class="rot-icon">▭</div><div>Bitte drehe dein Gerät ins <b>Querformat</b></div></div>
+  </div>
+
+  <div id="clicklock" class="overlay hidden"><div class="cl-inner">KLICKEN, UM FORTZUFAHREN</div></div>
+
+  <!-- mobile controls -->
+  <div id="touch" class="hidden">
+    <div id="stick-l" class="stick"><i></i></div>
+    <div id="touch-right">
+      <button class="tbtn" id="t-fire">FEUER</button>
+      <button class="tbtn small" id="t-ads">ADS</button>
+      <button class="tbtn small" id="t-light">🔦</button>
+      <button class="tbtn small" id="t-use">E</button>
+      <button class="tbtn small" id="t-run">RUN</button>
+      <button class="tbtn small" id="t-stone">◍</button>
+    </div>
+  </div>
+</div>
+
+<script src="vendor/three.min.js" onerror="window.__threeFallback&&window.__threeFallback()"></script>
+<script>
+// Fallback: when the vendored copy is unavailable (e.g. single-file hosting), pull from the CDN.
+window.__threeFallback = function(){
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+  s.onerror = function(){ document.getElementById('warn-gl').textContent = '3D-Bibliothek konnte nicht geladen werden.'; };
+  document.head.appendChild(s);
+};
+</script>
+<script src="src/core/util.js"></script>
+<script src="src/core/textures.js"></script>
+<script src="src/core/audio.js"></script>
+<script src="src/core/postfx.js"></script>
+<script src="src/world/level.js"></script>
+<script src="src/world/props.js"></script>
+<script src="src/game/player.js"></script>
+<script src="src/game/weapon.js"></script>
+<script src="src/game/ghost.js"></script>
+<script src="src/game/hud.js"></script>
+<script src="src/game/game.js"></script>
+<script src="src/main.js"></script>
+</body>
+</html>
