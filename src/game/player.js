@@ -17,6 +17,16 @@
     this.locked = false;
     this.sensitivity = 1.3;
     this.invertY = false;
+
+    // Pointer lock is not available everywhere. Embedded in an iframe whose
+    // sandbox omits allow-pointer-lock the request fails silently, so the
+    // game falls back to drag-to-look and stays fully playable.
+    this.dragLook = false;
+    this.lockTried = false;
+    this._dragging = false;
+    this._dragX = 0; this._dragY = 0;
+    this._dragMoved = 0; this._dragStart = 0;
+    this._fireQueued = false;
     this.touch = {
       active: false, moveX: 0, moveY: 0,
       lookDX: 0, lookDY: 0, fire: false, ads: false, sprint: false
@@ -40,28 +50,58 @@
     window.addEventListener('blur', function () { self.keys = {}; self.mouse.left = self.mouse.right = false; });
 
     document.addEventListener('mousemove', function (e) {
-      if (!self.locked) return;
-      self.mouseDX += e.movementX || 0;
-      self.mouseDY += e.movementY || 0;
+      if (self.locked) {
+        self.mouseDX += e.movementX || 0;
+        self.mouseDY += e.movementY || 0;
+      } else if (self._dragging) {
+        var dx = e.clientX - self._dragX, dy = e.clientY - self._dragY;
+        self._dragX = e.clientX; self._dragY = e.clientY;
+        self.mouseDX += dx; self.mouseDY += dy;
+        self._dragMoved += Math.abs(dx) + Math.abs(dy);
+      }
     });
 
     document.addEventListener('mousedown', function (e) {
-      if (!self.locked) return;
-      if (e.button === 0) self.mouse.left = true;
+      if (self.locked) {
+        if (e.button === 0) { self.mouse.left = true; self._fireQueued = true; }
+        if (e.button === 2) self.mouse.right = true;
+        return;
+      }
+      if (!self.dragLook) return;
+      if (e.button === 0) {
+        self._dragging = true;
+        self._dragX = e.clientX; self._dragY = e.clientY;
+        self._dragMoved = 0;
+        self._dragStart = performance.now();
+        e.preventDefault();
+      }
       if (e.button === 2) self.mouse.right = true;
     });
+
     document.addEventListener('mouseup', function (e) {
-      if (e.button === 0) self.mouse.left = false;
       if (e.button === 2) self.mouse.right = false;
+      if (e.button !== 0) return;
+      self.mouse.left = false;
+      if (!self._dragging) return;
+      self._dragging = false;
+      // a tap that did not travel is a shot; a drag was aiming
+      var quick = performance.now() - self._dragStart < 260;
+      if (quick && self._dragMoved < 9) self._fireQueued = true;
     });
+
+    window.addEventListener('mouseout', function (e) {
+      if (!e.relatedTarget && !e.toElement) self._dragging = false;
+    });
+
     document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
     document.addEventListener('pointerlockchange', function () {
-      self.locked = document.pointerLockElement === document.body ||
-        document.pointerLockElement === document.getElementById('stage') ||
-        !!document.pointerLockElement;
+      self.locked = !!document.pointerLockElement;
+      if (self.locked) self.dragLook = false;
       if (self.onLockChange) self.onLockChange(self.locked);
     });
+
+    document.addEventListener('pointerlockerror', function () { self._noLock(); });
   };
 
   /** True once per press. */
@@ -74,18 +114,44 @@
     this.mouseDX = 0; this.mouseDY = 0;
     this.touch.lookDX = 0; this.touch.lookDY = 0;
   };
-  Input.prototype.clearPresses = function () { this._pressed = {}; };
+  Input.prototype.clearPresses = function () { this._pressed = {}; this._fireQueued = false; };
+
+  /** Called when the browser refuses pointer lock; switches to drag-to-look. */
+  Input.prototype._noLock = function () {
+    if (this.dragLook) return;
+    this.dragLook = true;
+    this.locked = false;
+    if (this.onDragLook) this.onDragLook();
+  };
 
   Input.prototype.requestLock = function (el) {
+    if (this.dragLook) return;
     var t = el || document.body;
-    if (t.requestPointerLock) {
+    if (!t.requestPointerLock) { this._noLock(); return; }
+    this.lockTried = true;
+    var self = this;
+    try {
       var p = t.requestPointerLock();
-      if (p && p.catch) p.catch(function () { });
-    }
+      if (p && p.catch) p.catch(function () { self._noLock(); });
+    } catch (e) { this._noLock(); return; }
+    // Some hosts neither resolve nor raise an error: they simply do nothing.
+    // If no lock has arrived shortly after asking, treat it as unavailable.
+    setTimeout(function () {
+      if (!document.pointerLockElement && !self.dragLook) self._noLock();
+    }, 500);
   };
+
   Input.prototype.exitLock = function () {
     if (document.exitPointerLock) document.exitPointerLock();
   };
+
+  /** One shot per click. Eight rounds are too few to hold the trigger down. */
+  Input.prototype.takeFire = function () {
+    if (!this._fireQueued) return false;
+    this._fireQueued = false;
+    return true;
+  };
+  Input.prototype.queueFire = function () { this._fireQueued = true; };
 
   /* =============================== PLAYER =============================== */
   var EYE_STAND = 1.68, EYE_CROUCH = 1.02;

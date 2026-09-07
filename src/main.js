@@ -287,7 +287,16 @@
     });
 
     game.input.onLockChange = function (locked) {
-      if (!locked && game.state === S.PLAYING) pauseGame();
+      // In drag-to-look mode there is no lock to lose, so losing it is not a
+      // reason to interrupt the run.
+      if (!locked && !game.input.dragLook && game.state === S.PLAYING) pauseGame();
+    };
+
+    game.input.onDragLook = function () {
+      document.body.classList.add('draglook');
+      if (game.state === S.PLAYING) {
+        hud.toast('Maus ziehen zum Umsehen · Klicken zum Schießen');
+      }
     };
 
     // clicking the canvas while paused-by-lock-loss resumes
@@ -384,7 +393,7 @@
       el.addEventListener('touchstart', function (e) { e.preventDefault(); on(); }, { passive: false });
       el.addEventListener('touchend', function (e) { e.preventDefault(); if (off) off(); }, { passive: false });
     }
-    hold('#t-fire', function () { input.touch.fire = true; });
+    hold('#t-fire', function () { input.queueFire(); });
     hold('#t-ads', function () { input.touch.ads = !input.touch.ads; });
     hold('#t-run', function () { input.touch.sprint = true; }, function () { input.touch.sprint = false; });
     hold('#t-light', function () { if (game.player) game.player.toggleLight(); });

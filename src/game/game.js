@@ -438,8 +438,7 @@
     /* ---- weapon ---- */
     var torchOn = p.lightOn && p.battery > 0;
     this.weapon.update(dt, p, inp, torchOn);
-    if ((inp.mouse.left || inp.touch.fire) && !p.grabbed && !this.qte.active) this.tryFire();
-    if (inp.touch.fire) inp.touch.fire = false;
+    if (inp.takeFire() && !p.grabbed && !this.qte.active) this.tryFire();
 
     /* ---- ghost ---- */
     g.update(dt, {

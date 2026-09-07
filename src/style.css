@@ -153,6 +153,17 @@ body{
   filter:drop-shadow(0 0 7px rgba(200,65,47,.9));
 }
 
+/* --- fallback control hint --- */
+#dragnote{
+  display:none;position:absolute;left:50%;bottom:calc(48px + var(--safe));
+  transform:translateX(-50%);white-space:nowrap;
+  font-size:11px;letter-spacing:.2em;color:var(--bone-dim);
+  text-shadow:0 1px 5px #000;
+}
+body.draglook #dragnote{display:block}
+body.draglook #gl{cursor:grab}
+body.draglook #gl:active{cursor:grabbing}
+
 /* --- prompt / subtitles / toasts --- */
 #prompt{
   position:absolute;left:50%;top:57%;transform:translateX(-50%);

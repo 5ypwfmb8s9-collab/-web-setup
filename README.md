@@ -10,8 +10,18 @@ Ein Survival-Horror-Ego-Shooter im Browser. Acht Kugeln. Eine Tür. Etwas geht h
 
 ## Spielen
 
-**Am schnellsten:** `dist/gulyabani.html` im Browser öffnen. Eine einzige Datei, keine
-Installation, kein Server, funktioniert auch komplett offline.
+**Als Streamlit-App:**
+
+```
+streamlit run gulyabani_app.py
+```
+
+Unter Windows genügt ein Doppelklick auf `Start_GULYABANI.bat`, unter macOS und
+Linux `./start_gulyabani.sh`. Beide bauen das Spiel bei Bedarf und installieren
+Streamlit, falls es fehlt.
+
+**Ohne Streamlit:** `dist/gulyabani.html` im Browser öffnen. Eine einzige Datei,
+keine Installation, kein Server, funktioniert auch komplett offline.
 
 **Aus dem Quellcode:** einen beliebigen Webserver im Projektordner starten und
 `index.html` aufrufen.
@@ -23,6 +33,26 @@ python3 -m http.server 8000
 
 Kopfhörer werden empfohlen. Der Geist ist über die Richtung seines Knurrens
 auffindbar, lange bevor er sichtbar wird.
+
+### Mausteuerung in Streamlit
+
+Streamlit rendert Komponenten in einem iframe, dessen `sandbox`-Attribut
+`allow-pointer-lock` **nicht** enthält:
+
+```
+sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox
+         allow-same-origin allow-scripts allow-downloads"
+```
+
+`requestPointerLock()` schlägt darin lautlos fehl, die Maus wird also nicht
+eingefangen. Das Spiel erkennt das und schaltet automatisch auf Ersatzsteuerung
+um: **ziehen zum Umsehen, klicken zum Schießen**. Ein Hinweis erscheint dann am
+unteren Bildrand.
+
+Für echte Mausteuerung gibt es oben in der Mitte den Knopf **Eigener Tab**. Er
+öffnet dasselbe Spiel in einem eigenen Fenster. Weil `allow-popups-to-escape-
+sandbox` gesetzt ist, verlässt dieses Fenster die Sandbox und darf die Maus
+wieder einfangen.
 
 ---
 
@@ -44,6 +74,7 @@ einzigen Währungen sind Abstand und Zeit.
 |---|---|
 | `W` `A` `S` `D` | Bewegen |
 | Maus | Umsehen |
+| Maus ziehen | Umsehen, falls der Browser die Maus nicht einfängt |
 | `Umschalt` | Sprinten, verbraucht Nefes (Atem) |
 | `Strg` / `C` | Ducken, leiser und langsamer |
 | Linke Maustaste | Schießen |
@@ -141,6 +172,10 @@ src/game/hud.js       Anzeigen, Untertitel, Seiten
 src/game/game.js      Welt, Licht, Wetter, Spielschleife
 src/main.js           Start, Menüs, Touch
 build.js              Bündelt alles in eine Datei
+gulyabani_app.py      Streamlit-Hülle
+requirements.txt      Streamlit
+Start_GULYABANI.bat   Starter für Windows
+start_gulyabani.sh    Starter für macOS und Linux
 ```
 
 ### Bauen
@@ -167,4 +202,4 @@ als dein Schritt — er holt jedes Mal auf, wenn du stehen bleibst, um zu suchen
 
 ---
 
-Getestet in Chromium. Benötigt WebGL.
+Getestet in Chromium, eingebettet und eigenständig. Benötigt WebGL.
