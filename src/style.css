@@ -382,29 +382,139 @@ body.draglook #gl:active{cursor:grabbing}
 @keyframes blink{0%,100%{opacity:.35}50%{opacity:1}}
 #clicklock{background:rgba(0,0,0,.55);backdrop-filter:none;-webkit-backdrop-filter:none;cursor:pointer;pointer-events:auto}
 
-/* ======================== TOUCH CONTROLS ======================== */
+/* ======================== TOUCH CONTROLS ========================
+   Sized for thumbs, not cursors: nothing below 56px, the trigger in the
+   corner where the thumb rests, and every button reporting its own state
+   because a touch has no hover to fall back on.
+   ================================================================ */
 #touch{position:absolute;inset:0;z-index:20;pointer-events:none}
+
+/* --- left: movement --- */
 .stick{
-  position:absolute;left:calc(28px + env(safe-area-inset-left,0px));bottom:calc(28px + var(--safe));
-  width:118px;height:118px;border-radius:50%;
-  border:1.5px solid rgba(232,226,212,.2);background:rgba(0,0,0,.25);
-  pointer-events:auto;
+  position:absolute;left:calc(30px + env(safe-area-inset-left,0px));bottom:calc(30px + var(--safe));
+  width:132px;height:132px;border-radius:50%;
+  border:1.5px solid rgba(232,226,212,.18);
+  background:radial-gradient(circle at 50% 50%,rgba(232,226,212,.05),rgba(0,0,0,.30));
+  pointer-events:auto;touch-action:none;
 }
 .stick i{
-  position:absolute;left:50%;top:50%;width:46px;height:46px;margin:-23px 0 0 -23px;
-  border-radius:50%;background:rgba(232,226,212,.24);border:1px solid rgba(232,226,212,.35);
+  position:absolute;left:50%;top:50%;width:56px;height:56px;margin:-28px 0 0 -28px;
+  border-radius:50%;background:rgba(232,226,212,.22);
+  border:1px solid rgba(232,226,212,.42);
+  box-shadow:0 2px 12px rgba(0,0,0,.6);
+  transition:background .12s;
 }
+.stick.run i{background:rgba(201,162,39,.34);border-color:var(--brass)}
+.stick::after{
+  content:"RENNEN";position:absolute;left:50%;top:-17px;transform:translateX(-50%);
+  font-size:8.5px;letter-spacing:.24em;color:var(--brass-dim);opacity:0;transition:opacity .18s;
+}
+.stick.run::after{opacity:1}
+
+/* --- right: actions --- */
 #touch-right{
-  position:absolute;right:calc(20px + env(safe-area-inset-right,0px));bottom:calc(22px + var(--safe));
-  display:grid;grid-template-columns:repeat(3,58px);gap:8px;pointer-events:auto;
+  position:absolute;right:calc(18px + env(safe-area-inset-right,0px));
+  bottom:calc(20px + var(--safe));
+  display:flex;align-items:flex-end;gap:12px;
+  pointer-events:auto;touch-action:none;
 }
+#t-aux{display:grid;grid-template-columns:repeat(2,62px);gap:10px}
+#t-main{display:flex;flex-direction:column;align-items:center;gap:12px}
+
 .tbtn{
-  appearance:none;height:52px;border-radius:6px;cursor:pointer;
-  background:rgba(0,0,0,.35);border:1px solid rgba(232,226,212,.24);
-  color:var(--bone);font-family:var(--ui-font);font-size:12px;letter-spacing:.12em;
+  appearance:none;cursor:pointer;position:relative;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
+  background:rgba(8,8,12,.52);
+  border:1px solid rgba(232,226,212,.26);
+  color:var(--bone);font-family:var(--ui-font);
+  -webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px);
+  box-shadow:0 3px 14px rgba(0,0,0,.55);
+  touch-action:none;user-select:none;
+  transition:background .10s,border-color .10s,transform .07s;
 }
-.tbtn:active{background:rgba(232,226,212,.2)}
-#t-fire{grid-column:span 3;height:60px;font-size:15px;letter-spacing:.24em;border-color:rgba(200,65,47,.45)}
+.tbtn.press{transform:scale(.93);background:rgba(232,226,212,.24)}
+
+.tbtn.aux{width:62px;height:62px;border-radius:50%}
+.tbtn.aux span{font-size:19px;line-height:1}
+.tbtn.aux em{font-style:normal;font-size:7.5px;letter-spacing:.14em;color:var(--bone-dim)}
+.tbtn.aux.on{background:rgba(201,162,39,.26);border-color:var(--brass)}
+.tbtn.aux.on em{color:#f0e6cd}
+
+.tbtn.ads{
+  width:76px;height:76px;border-radius:50%;
+  font-size:11px;letter-spacing:.16em;color:var(--bone-dim);
+}
+.tbtn.ads.on{
+  background:rgba(201,162,39,.28);border-color:var(--brass);color:#f6ecd2;
+  box-shadow:0 0 22px rgba(201,162,39,.35),0 3px 14px rgba(0,0,0,.55);
+}
+
+.tbtn.fire{
+  width:104px;height:104px;border-radius:50%;
+  border:2px solid rgba(200,65,47,.55);
+  background:radial-gradient(circle at 50% 40%,rgba(200,65,47,.24),rgba(8,8,12,.6));
+}
+.tbtn.fire::before{
+  content:"";width:22px;height:22px;border-radius:50%;
+  border:2px solid rgba(240,225,212,.9);
+  box-shadow:0 0 10px rgba(0,0,0,.9);
+}
+.tbtn.fire::after{
+  content:"";position:absolute;width:5px;height:5px;border-radius:50%;
+  background:rgba(240,225,212,.95);
+}
+.tbtn.fire.press{background:radial-gradient(circle at 50% 40%,rgba(232,110,82,.55),rgba(40,8,6,.7))}
+.tbtn.fire.empty{border-color:rgba(120,120,120,.35);opacity:.45}
+
+#t-pause{
+  position:absolute;top:calc(12px + env(safe-area-inset-top,0px));
+  right:calc(16px + env(safe-area-inset-right,0px));
+  width:44px;height:44px;border-radius:50%;
+  font-size:13px;letter-spacing:.12em;pointer-events:auto;
+}
+
+/* ---- readouts move out of the way of the thumbs ----
+   On a phone the bottom corners belong to the hands: the stick owns the
+   lower left, the buttons the lower right. Everything that is only read
+   moves to the top, where nothing is ever covered by a finger. */
+body.touch #hud-top{right:calc(70px + env(safe-area-inset-right,0px))}
+
+body.touch #hud-left{
+  left:calc(20px + env(safe-area-inset-left,0px));
+  top:calc(92px + env(safe-area-inset-top,0px));
+  bottom:auto;width:min(168px,26vw);gap:7px;
+}
+body.touch #hud-left label{font-size:8.5px;letter-spacing:.22em}
+body.touch .meter .bar{height:4px}
+
+body.touch #hud-right{
+  right:calc(18px + env(safe-area-inset-right,0px));
+  top:calc(76px + env(safe-area-inset-top,0px));
+  bottom:auto;
+}
+body.touch #ammo-num{font-size:30px}
+body.touch #ammo-num s{font-size:14px}
+body.touch #ammo-label{display:none}
+body.touch #ammo-pips i{height:12px;width:4px}
+body.touch #stones{font-size:12px;margin-bottom:6px}
+
+body.touch #subs{
+  left:calc(50% - 48px);width:min(46vw,400px);
+  bottom:calc(18px + var(--safe));font-size:14px;
+}
+body.touch #toasts{top:14%;width:min(52vw,460px)}
+body.touch #dragnote{display:none}
+body.touch #prompt{top:42%}
+body.touch #qte{top:56%}
+
+@media (max-height:400px){
+  .stick{width:112px;height:112px}
+  .stick i{width:48px;height:48px;margin:-24px 0 0 -24px}
+  .tbtn.fire{width:88px;height:88px}
+  .tbtn.ads{width:64px;height:64px;font-size:10px}
+  .tbtn.aux{width:54px;height:54px}
+  #t-aux{grid-template-columns:repeat(2,54px)}
+}
 
 /* portrait guard */
 @media (orientation:portrait) and (pointer:coarse){

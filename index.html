@@ -228,14 +228,23 @@
   <!-- mobile controls -->
   <div id="touch" class="hidden">
     <div id="stick-l" class="stick"><i></i></div>
+
+    <!-- Right hand. Thumb reach decides the order: the trigger sits in the
+         corner, aim just above it, everything else further in. -->
     <div id="touch-right">
-      <button class="tbtn" id="t-fire">FEUER</button>
-      <button class="tbtn small" id="t-ads">ADS</button>
-      <button class="tbtn small" id="t-light">🔦</button>
-      <button class="tbtn small" id="t-use">E</button>
-      <button class="tbtn small" id="t-run">RUN</button>
-      <button class="tbtn small" id="t-stone">◍</button>
+      <div id="t-aux">
+        <button class="tbtn aux" id="t-crouch" aria-label="Ducken"><span>⌄</span><em>DUCKEN</em></button>
+        <button class="tbtn aux" id="t-stone" aria-label="Stein werfen"><span>◍</span><em>STEIN</em></button>
+        <button class="tbtn aux" id="t-light" aria-label="Taschenlampe"><span>☀</span><em>LAMPE</em></button>
+        <button class="tbtn aux" id="t-use" aria-label="Benutzen"><span>E</span><em>NEHMEN</em></button>
+      </div>
+      <div id="t-main">
+        <button class="tbtn ads" id="t-ads" aria-label="Kimme und Korn">KIMME</button>
+        <button class="tbtn fire" id="t-fire" aria-label="Schießen"></button>
+      </div>
     </div>
+
+    <button class="tbtn" id="t-pause" aria-label="Pause">II</button>
   </div>
 </div>
 

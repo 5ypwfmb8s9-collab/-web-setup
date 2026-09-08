@@ -28,8 +28,8 @@
     this._dragMoved = 0; this._dragStart = 0;
     this._fireQueued = false;
     this.touch = {
-      active: false, moveX: 0, moveY: 0,
-      lookDX: 0, lookDY: 0, fire: false, ads: false, sprint: false
+      active: false, moveX: 0, moveY: 0, mag: 0,
+      lookDX: 0, lookDY: 0, ads: false, crouch: false
     };
     this._pressed = {};
     this._bind();
@@ -237,8 +237,10 @@
       var sens = inp.sensitivity * 0.0016;
       this.yaw -= inp.mouseDX * sens;
       this.pitch -= (inp.invertY ? -1 : 1) * inp.mouseDY * sens;
-      this.yaw -= inp.touch.lookDX * sens * 1.35;
-      this.pitch -= inp.touch.lookDY * sens * 1.35;
+      // A thumb covers a fraction of the pixels a mouse does, so touch look
+      // needs its own rate rather than the mouse figure.
+      this.yaw -= inp.touch.lookDX * sens * 2.7;
+      this.pitch -= inp.touch.lookDY * sens * 2.7;
     } else {
       // during a grab the camera is dragged toward the creature
       var want = Math.atan2(-(ctx.ghostPos.x - this.pos.x), -(ctx.ghostPos.z - this.pos.z));
@@ -260,15 +262,23 @@
     if (mag > 1) { mf /= mag; ms /= mag; }
 
     /* ---- crouch ---- */
-    var wantCrouch = inp.down('ControlLeft') || inp.down('KeyC') || inp.down('ControlRight');
+    var wantCrouch = inp.down('ControlLeft') || inp.down('KeyC') ||
+      inp.down('ControlRight') || inp.touch.crouch;
     this.crouching = wantCrouch && !this.grabbed;
     var targetEye = this.crouching ? EYE_CROUCH : EYE_STAND;
     this.eye = U.damp(this.eye, targetEye, 11, dt);
 
     /* ---- sprint ---- */
-    var wantSprint = (inp.down('ShiftLeft') || inp.down('ShiftRight') || inp.touch.sprint) &&
+    // On touch there is no spare thumb for a run button, so the stick itself
+    // asks: held at the rim for a third of a second means run. The delay
+    // stops a hard flick from burning stamina by accident.
+    if (inp.touch.mag > 0.92) this._touchRun = (this._touchRun || 0) + dt;
+    else this._touchRun = 0;
+    var touchSprint = this._touchRun > 0.30;
+    var wantSprint = (inp.down('ShiftLeft') || inp.down('ShiftRight') || touchSprint) &&
       mf > 0.15 && !this.crouching && this.stamina > 0.03 && !this.grabbed;
     this.sprinting = wantSprint;
+    inp.touch.running = wantSprint;
 
     if (this.sprinting) {
       this.stamina = Math.max(0, this.stamina - this.D.staminaDrain * dt);

@@ -86,8 +86,25 @@ einzigen Währungen sind Abstand und Zeit.
 | `Leertaste` | Losreißen, wenn er dich packt |
 | `Esc` / `P` | Pause |
 
-Auf Touchgeräten erscheinen ein Bewegungsstick links und Aktionstasten rechts.
-Das Spiel ist für Querformat gebaut und weist im Hochformat darauf hin.
+Ein Klick ist ein Schuss. Gedrückthalten feuert nicht weiter — bei acht Patronen
+wäre das die falsche Vorgabe.
+
+### Auf dem Handy
+
+Querformat. Links der Bewegungsstick, rechts die Aktionen.
+
+| | |
+|---|---|
+| **Stick** | Bewegen. An den Rand gedrückt und kurz gehalten heißt rennen, es gibt keinen eigenen Renn-Knopf. |
+| **Freie Fläche** | Ziehen zum Umsehen. Knöpfe lösen das nie mit aus. |
+| **Roter Kreis** | Schießen, ein Schuss pro Tipp. Wird blass, wenn leer. |
+| **KIMME** | Kimme und Korn, rastet ein statt zu halten. Leuchtet, wenn aktiv. |
+| **DUCKEN** | Rastet ein. |
+| **STEIN · LAMPE · NEHMEN** | Stein werfen, Taschenlampe, Benutzen. Die Lampe leuchtet, solange sie an ist. |
+| **II** oben rechts | Pause. |
+
+Alle Anzeigen sitzen oben, weil die unteren Ecken den Daumen gehören. Beim
+Zupacken genügt es, irgendwo auf den Bildschirm zu hämmern.
 
 ---
 

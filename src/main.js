@@ -315,98 +315,165 @@
     checkOrientation();
   }
 
-  /* ============================== TOUCH ============================== */
+  /* ============================== TOUCH ==============================
+     Two independent hands. The left one drives a stick; the right one is a
+     set of buttons plus a free area for looking. The two must never fight
+     over the same finger, which is what the target test below guarantees:
+     a touch that lands on a control belongs to that control and nothing
+     else. The previous version guessed with a rectangle and got it wrong,
+     so pressing a button also swung the camera.
+  ================================================================== */
   function wireTouch() {
     var coarse = window.matchMedia('(pointer: coarse)').matches ||
       ('ontouchstart' in window && navigator.maxTouchPoints > 0);
     if (!coarse) return;
 
-    var t = $('#touch');
-    t.classList.remove('hidden');
     var input = game.input;
+    var S = global.GGame.STATE;
+    $('#touch').classList.remove('hidden');
+    document.body.classList.add('touch');
     input.touch.active = true;
 
-    /* --- movement stick --- */
+    function isControl(el) {
+      return !!(el && el.closest && el.closest('.tbtn, .stick'));
+    }
+
+    /* ------------------------- movement stick ------------------------- */
     var stick = $('#stick-l'), knob = stick.querySelector('i');
-    var stickId = null, sx = 0, sy = 0;
-    var lookId = null, lookX = 0, lookY = 0;
-    var R = 46;
+    var stickId = null, sx = 0, sy = 0, R = 50;
+
+    function stickSet(to) {
+      var dx = to.clientX - sx, dy = to.clientY - sy;
+      var len = Math.hypot(dx, dy);
+      var k = len > R ? R / len : 1;
+      var nx = dx * k, ny = dy * k;
+      knob.style.transform = 'translate(' + nx.toFixed(1) + 'px,' + ny.toFixed(1) + 'px)';
+      input.touch.moveX = nx / R;
+      input.touch.moveY = -ny / R;
+      input.touch.mag = Math.min(1, len / R);
+    }
+    function stickClear() {
+      stickId = null;
+      knob.style.transform = '';
+      stick.classList.remove('run');
+      input.touch.moveX = input.touch.moveY = 0;
+      input.touch.mag = 0;
+    }
 
     stick.addEventListener('touchstart', function (e) {
       var to = e.changedTouches[0];
       stickId = to.identifier;
       var r = stick.getBoundingClientRect();
       sx = r.left + r.width / 2; sy = r.top + r.height / 2;
+      stickSet(to);
       e.preventDefault();
     }, { passive: false });
 
-    window.addEventListener('touchmove', function (e) {
+    /* --------------------------- look area --------------------------- */
+    var lookId = null, lookX = 0, lookY = 0;
+
+    $('#stage').addEventListener('touchstart', function (e) {
+      if (game.state !== S.PLAYING) return;
       for (var i = 0; i < e.changedTouches.length; i++) {
         var to = e.changedTouches[i];
-        if (to.identifier === stickId) {
-          var dx = to.clientX - sx, dy = to.clientY - sy;
-          var l = Math.hypot(dx, dy);
-          if (l > R) { dx = dx / l * R; dy = dy / l * R; }
-          knob.style.transform = 'translate(' + dx + 'px,' + dy + 'px)';
-          input.touch.moveX = dx / R;
-          input.touch.moveY = -dy / R;
-          e.preventDefault();
-        } else if (to.identifier === lookId) {
+        if (to.identifier === stickId) continue;
+        if (isControl(to.target)) continue;          // belongs to a button
+        if (lookId !== null) continue;
+        lookId = to.identifier;
+        lookX = to.clientX; lookY = to.clientY;
+      }
+    }, { passive: true });
+
+    /* --------------------------- shared move --------------------------- */
+    window.addEventListener('touchmove', function (e) {
+      var used = false;
+      for (var i = 0; i < e.changedTouches.length; i++) {
+        var to = e.changedTouches[i];
+        if (to.identifier === stickId) { stickSet(to); used = true; }
+        else if (to.identifier === lookId) {
           input.touch.lookDX += to.clientX - lookX;
           input.touch.lookDY += to.clientY - lookY;
           lookX = to.clientX; lookY = to.clientY;
-          e.preventDefault();
+          used = true;
         }
       }
+      if (used) e.preventDefault();
     }, { passive: false });
 
     function endTouch(e) {
       for (var i = 0; i < e.changedTouches.length; i++) {
-        var to = e.changedTouches[i];
-        if (to.identifier === stickId) {
-          stickId = null;
-          knob.style.transform = '';
-          input.touch.moveX = 0; input.touch.moveY = 0;
-        }
-        if (to.identifier === lookId) lookId = null;
+        var id = e.changedTouches[i].identifier;
+        if (id === stickId) stickClear();
+        if (id === lookId) lookId = null;
       }
     }
-    window.addEventListener('touchend', endTouch);
-    window.addEventListener('touchcancel', endTouch);
+    window.addEventListener('touchend', endTouch, { passive: true });
+    window.addEventListener('touchcancel', endTouch, { passive: true });
 
-    /* --- look drag anywhere on the right, away from the buttons --- */
-    $('#stage').addEventListener('touchstart', function (e) {
-      if (game.state !== global.GGame.STATE.PLAYING) return;
-      for (var i = 0; i < e.changedTouches.length; i++) {
-        var to = e.changedTouches[i];
-        if (to.identifier === stickId || lookId !== null) continue;
-        if (to.clientX < window.innerWidth * 0.35) continue;
-        if (to.clientY > window.innerHeight - 110 && to.clientX > window.innerWidth - 220) continue;
-        lookId = to.identifier; lookX = to.clientX; lookY = to.clientY;
-      }
-    }, { passive: true });
-
-    /* --- buttons --- */
-    function hold(sel, on, off) {
+    /* ----------------------------- buttons ----------------------------- */
+    /** Momentary button: fires once on press, shows it, never looks around. */
+    function tap(sel, onPress) {
       var el = $(sel);
-      if (!el) return;
-      el.addEventListener('touchstart', function (e) { e.preventDefault(); on(); }, { passive: false });
-      el.addEventListener('touchend', function (e) { e.preventDefault(); if (off) off(); }, { passive: false });
+      if (!el) return null;
+      el.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        el.classList.add('press');
+        onPress();
+      }, { passive: false });
+      function release(e) {
+        if (e) { e.preventDefault(); e.stopPropagation(); }
+        el.classList.remove('press');
+      }
+      el.addEventListener('touchend', release, { passive: false });
+      el.addEventListener('touchcancel', release, { passive: false });
+      return el;
     }
-    hold('#t-fire', function () { input.queueFire(); });
-    hold('#t-ads', function () { input.touch.ads = !input.touch.ads; });
-    hold('#t-run', function () { input.touch.sprint = true; }, function () { input.touch.sprint = false; });
-    hold('#t-light', function () { if (game.player) game.player.toggleLight(); });
-    hold('#t-use', function () {
-      if (game.state === global.GGame.STATE.NOTE) { closeNote(); return; }
+
+    /** Latching button: touch has no spare thumb to hold anything down. */
+    function toggle(sel, onChange) {
+      var el = $(sel);
+      if (!el) return null;
+      el.addEventListener('touchstart', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var on = !el.classList.contains('on');
+        el.classList.toggle('on', on);
+        onChange(on);
+      }, { passive: false });
+      return el;
+    }
+
+    var fireBtn = tap('#t-fire', function () { input.queueFire(); });
+    toggle('#t-ads', function (on) { input.touch.ads = on; game.audio.adsClick(on); });
+    toggle('#t-crouch', function (on) { input.touch.crouch = on; });
+    tap('#t-light', function () { if (game.player) game.player.toggleLight(); });
+    tap('#t-use', function () {
+      if (game.state === S.NOTE) { closeNote(); return; }
       input._pressed['KeyE'] = true;
     });
-    hold('#t-stone', function () { input._pressed['KeyG'] = true; });
+    tap('#t-stone', function () { input._pressed['KeyG'] = true; });
+    tap('#t-pause', function () {
+      if (game.state === S.PLAYING) pauseGame();
+      else if (game.state === S.PAUSED) resumeGame();
+      else if (game.state === S.NOTE) closeNote();
+    });
 
-    // QTE on touch: tap anywhere
+    // hammering the trigger is how you break a grab on a phone
     $('#stage').addEventListener('touchstart', function () {
       if (game.qte && game.qte.active) input._pressed['Space'] = true;
     }, { passive: true });
+
+    /* -------------------- keep the buttons truthful -------------------- */
+    setInterval(function () {
+      if (!game.weapon || !fireBtn) return;
+      fireBtn.classList.toggle('empty', game.weapon.ammo === 0);
+      stick.classList.toggle('run', !!input.touch.running);
+      var lightBtn = $('#t-light');
+      if (lightBtn && game.player) {
+        lightBtn.classList.toggle('on', game.player.lightOn && game.player.battery > 0);
+      }
+    }, 200);
   }
 
   /* ============================== LOOP ============================== */
