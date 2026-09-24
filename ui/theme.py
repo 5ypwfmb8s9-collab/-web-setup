@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 from functools import lru_cache
 from pathlib import Path
@@ -26,32 +27,63 @@ def inject_css() -> None:
 
 
 # Ergänzt <head> um Icon & Web-App-Metadaten, damit „Zum Home-Bildschirm“ gut aussieht.
+# Auf Streamlit Community Cloud läuft die App in einem iframe; Safari/Chrome nehmen Icon und
+# Namen aber von der äußeren Seite. Deshalb wird – soweit der Browser es erlaubt (gleiche
+# Domain) – auch die äußere Seite angepasst. Das Icon ist als data-URL eingebettet, damit es
+# unabhängig vom Pfad der Seite funktioniert.
 _HEAD_JS = """
 <span class="kano-invisible"></span>
 <script>
 (function () {
-  const head = document.head;
-  if (head.querySelector('meta[name="kano-head"]')) return;
-  const add = (tag, attrs) => { const el = document.createElement(tag);
-    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v)); head.appendChild(el); };
-  add('meta', {name: 'kano-head', content: '1'});
-  add('link', {rel: 'apple-touch-icon', sizes: '180x180', href: '/app/static/kano-icon-180.png'});
-  add('link', {rel: 'icon', type: 'image/png', sizes: '192x192', href: '/app/static/kano-icon-192.png'});
-  add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
-  add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
-  add('meta', {name: 'apple-mobile-web-app-title', content: 'KANO'});
-  add('meta', {name: 'application-name', content: 'KANO'});
-  add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'black'});
-  add('meta', {name: 'theme-color', content: '#000000'});
-  const vp = head.querySelector('meta[name="viewport"]');
-  if (vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover');
+  const ICON_180 = "__ICON_180__";
+  const ICON_192 = "__ICON_192__";
+  const docs = [document];
+  try { if (window.parent && window.parent !== window) docs.push(window.parent.document); } catch (e) {}
+  try { if (window.top && window.top !== window && window.top !== window.parent) docs.push(window.top.document); } catch (e) {}
+  docs.forEach(function (doc) {
+    try {
+      const head = doc.head;
+      if (!head || head.querySelector('meta[name="kano-head"]')) return;
+      // vorhandene (Streamlit-)Icons entfernen, damit unseres gewinnt
+      head.querySelectorAll('link[rel~="icon"], link[rel="shortcut icon"], link[rel^="apple-touch-icon"], link[rel="manifest"]')
+          .forEach(function (el) { el.remove(); });
+      head.querySelectorAll('meta[name="apple-mobile-web-app-title"], meta[name="application-name"], meta[name="theme-color"]')
+          .forEach(function (el) { el.remove(); });
+      const add = function (tag, attrs) { const el = doc.createElement(tag);
+        Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); }); head.prepend(el); };
+      add('meta', {name: 'kano-head', content: '1'});
+      add('link', {rel: 'apple-touch-icon', sizes: '180x180', href: ICON_180});
+      add('link', {rel: 'icon', type: 'image/png', sizes: '192x192', href: ICON_192});
+      add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
+      add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
+      add('meta', {name: 'apple-mobile-web-app-title', content: 'KANO'});
+      add('meta', {name: 'application-name', content: 'KANO'});
+      add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'black'});
+      add('meta', {name: 'theme-color', content: '#000000'});
+      doc.title = 'KANO';
+      const vp = head.querySelector('meta[name="viewport"]');
+      if (vp) vp.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover');
+    } catch (e) {}
+  });
 })();
 </script>
 """
 
 
+@lru_cache(maxsize=1)
+def _head_js() -> str:
+    def data_url(name: str) -> str:
+        return "data:image/png;base64," + base64.b64encode((ROOT / "static" / name).read_bytes()).decode()
+
+    return _HEAD_JS.replace("__ICON_180__", data_url("kano-icon-180.png")).replace("__ICON_192__", data_url("kano-icon-192.png"))
+
+
 def inject_head() -> None:
-    st.html(_HEAD_JS, unsafe_allow_javascript=True)
+    """Nur einmal pro Sitzung nötig – die Änderungen am <head> bleiben bestehen."""
+    if st.session_state.get("_head_injected"):
+        return
+    st.session_state["_head_injected"] = True
+    st.html(_head_js(), unsafe_allow_javascript=True)
 
 
 def set_cookie(name: str, value: str, max_age: int) -> None:
