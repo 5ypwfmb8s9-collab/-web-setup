@@ -325,3 +325,9 @@ button[kind="tertiary"], [data-testid="stBaseButton-tertiary"] { min-height: 36p
   box-shadow: 0 6px 24px -10px rgba(123, 97, 255, 0.7);
 }
 [class*="st-key-cta_"] [data-testid="stPageLink"] a * { color: #fff !important; }
+
+/* Deaktivierte Buttons deutlich als inaktiv zeigen (auch mit Gradient) */
+.stButton > button:disabled, .stFormSubmitButton > button:disabled,
+[data-testid="stBaseButton-primary"]:disabled, [data-testid="stBaseButton-primaryFormSubmit"]:disabled {
+  opacity: 0.35 !important; box-shadow: none !important; cursor: not-allowed;
+}

@@ -1,5 +1,6 @@
 """Gemeinsame Test-Fixtures: jede Testfunktion bekommt eine frische SQLite-Datenbank."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,12 +12,26 @@ sys.path.insert(0, str(ROOT))
 from db import engine as db_engine  # noqa: E402
 
 
+PG_URL = os.environ.get("KANO_TEST_DATABASE_URL")  # z. B. postgresql+psycopg://postgres@localhost:5433/kano_test
+
+
 @pytest.fixture(autouse=True)
 def fresh_db(tmp_path, monkeypatch):
-    url = f"sqlite:///{tmp_path / 'test.db'}"
-    monkeypatch.setenv("DATABASE_URL", url)
-    db_engine.set_engine(db_engine.make_engine(url))
+    """Frische Datenbank je Test: SQLite-Datei – oder PostgreSQL, wenn KANO_TEST_DATABASE_URL gesetzt ist."""
+    if PG_URL:
+        from db.schema import metadata
+
+        engine = db_engine.make_engine(PG_URL)
+        metadata.drop_all(engine)
+        metadata.create_all(engine)
+        monkeypatch.setenv("DATABASE_URL", PG_URL)
+    else:
+        url = f"sqlite:///{tmp_path / 'test.db'}"
+        monkeypatch.setenv("DATABASE_URL", url)
+        engine = db_engine.make_engine(url)
+    db_engine.set_engine(engine)
     yield
+    engine.dispose()
     db_engine.set_engine(None)  # type: ignore[arg-type]
 
 

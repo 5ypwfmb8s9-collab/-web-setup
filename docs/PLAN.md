@@ -111,3 +111,23 @@ gewählt; bitte kurz bestätigen oder ändern:
    bewusst, um kein Kompensations-/Schuldverhalten zu fördern.
 8. **Barcode aus Foto mit `zxing-cpp`** (reine pip-Wheels, läuft auf Streamlit Cloud ohne Systempakete),
    bei Misserfolg liest Claude die Ziffern unter dem Barcode.
+
+## 5. Stand
+
+Alle sechs Phasen sind umgesetzt (je ein Commit). Geprüft wurde:
+
+* **72 automatisierte Tests** – laufen gegen SQLite *und* gegen PostgreSQL 16.
+* **Claude-Anbindung** gegen einen gemockten HTTP-Transport (Request-Form, Structured Outputs,
+  Streaming, Fehlerübersetzung). Ein Live-Test mit echtem API-Schlüssel stand in der
+  Entwicklungsumgebung nicht zur Verfügung.
+* **Open Food Facts** gegen gemockte Antworten (der Dienst war aus der Entwicklungsumgebung nicht erreichbar).
+* **Mobiler Klick-Test** (Playwright, 360 px und 390 px Breite): Registrierung, Onboarding, alle
+  Seiten und Tabs, „Angemeldet bleiben“ nach Neuladen, kein horizontaler Überlauf, keine JS-Fehler.
+* **Ladezeiten:** Seitenwechsel 30–260 ms; das Anthropic-SDK und fpdf2 werden erst bei Bedarf geladen.
+
+### Mögliche nächste Schritte
+
+* Alembic für Schemamigrationen, sobald Produktivdaten existieren.
+* Echte Angebotsdaten über einen eigenen `PriceProvider` (`core/pricing.py`).
+* Passwort-zurücksetzen per E-Mail (braucht einen Mail-Dienst).
+* Optional `st.login` (Google/Apple via OIDC) zusätzlich zu E-Mail + Passwort.

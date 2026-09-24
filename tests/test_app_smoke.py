@@ -55,3 +55,22 @@ def test_login_page_for_anonymous():
     at.run()
     assert not at.exception
     assert any("Konto erstellen" in t.label for t in at.tabs)
+
+
+def test_database_outage_shows_friendly_message(demo_user, monkeypatch):
+    """Fällt die Datenbank mitten in einer Seite aus, erscheint ein Hinweis statt eines Stacktraces."""
+    from sqlalchemy.exc import OperationalError
+
+    from db import repo
+
+    def broken(*args, **kwargs):
+        raise OperationalError("SELECT 1", {}, Exception("Verbindung verloren"))
+
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    at.session_state["user_id"] = demo_user
+    at.run()
+    monkeypatch.setattr(repo, "get_entries", broken)
+    at.run()
+    assert not at.exception
+    html = " ".join(h.proto.body for h in at.get("html"))
+    assert "Datenbank ist gerade nicht erreichbar" in html

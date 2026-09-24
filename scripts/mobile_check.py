@@ -1,8 +1,11 @@
-"""Mobiler Klick-Test mit Playwright (iPhone-Viewport) inkl. Screenshots.
+"""Mobiler Klick-Test mit Playwright inkl. Screenshots.
 
-Voraussetzung: App läuft (streamlit run app.py) und `pip install playwright`.
-Aufruf:  python scripts/mobile_check.py http://localhost:8501 ./screenshots
-Legt ein Testkonto an, durchläuft das Onboarding und fotografiert alle Hauptseiten.
+Voraussetzung: App läuft (streamlit run app.py) und `pip install playwright` (+ `playwright install chromium`).
+Aufruf:  python scripts/mobile_check.py [URL] [ORDNER] [BREITE]
+Beispiel: python scripts/mobile_check.py http://localhost:8501 screenshots 360
+
+Ablauf: Konto registrieren → Onboarding → jede Hauptseite samt Tabs fotografieren →
+neu laden (muss dank Cookie angemeldet bleiben) → prüfen, dass nichts horizontal überläuft.
 """
 
 import sys
@@ -14,28 +17,40 @@ from playwright.sync_api import Page, sync_playwright
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8501"
 OUT = Path(sys.argv[2] if len(sys.argv) > 2 else "screenshots")
+WIDTH = int(sys.argv[3]) if len(sys.argv) > 3 else 390
 OUT.mkdir(parents=True, exist_ok=True)
 
+PAGES = {
+    "Heute": [],
+    "Tracken": ["Suche", "Barcode", "Foto", "Favoriten"],
+    "Plan": ["Einkauf", "Reste", "Schichten", "Preise"],
+    "Fortschritt": ["Bedarf", "Woche", "Wohlbefinden", "Kraft"],
+    "Coach": [],
+    "Profil": ["Einstellungen", "Daten", "Konto"],
+}
 
-def settle(page: Page, extra: float = 0.6) -> None:
-    """Wartet, bis Streamlit fertig gerechnet hat."""
-    time.sleep(0.4)
-    page.wait_for_function(
-        "() => !document.querySelector('[data-testid=\"stStatusWidget\"]')?.innerText?.includes('Running')",
-        timeout=30000,
-    )
+
+def settle(extra: float = 1.2) -> None:
     time.sleep(extra)
 
 
-def shot(page: Page, name: str, full: bool = True) -> None:
-    settle(page)
-    page.screenshot(path=str(OUT / f"{name}.png"), full_page=full)
-    print("📸", name)
+def shot(page: Page, name: str) -> None:
+    settle()
+    page.screenshot(path=str(OUT / f"{name}.png"), full_page=True)
+    overflow = page.evaluate("() => document.documentElement.scrollWidth - window.innerWidth")
+    flag = f"  ⚠ horizontaler Überlauf {overflow}px" if overflow > 2 else ""
+    print(f"📸 {name}{flag}")
 
 
-def click_button(page: Page, text: str) -> None:
-    page.get_by_role("button", name=text, exact=True).first.click()
-    settle(page)
+def goto(page: Page, url: str, selector: str) -> None:
+    for attempt in range(4):  # Kaltstart des Servers kann dauern
+        try:
+            page.goto(url, timeout=60000)
+            page.wait_for_selector(selector, timeout=30000)
+            return
+        except Exception:  # noqa: BLE001
+            print("  … warte auf Server", attempt + 1)
+    raise SystemExit(f"Seite {url} lädt nicht")
 
 
 def main() -> None:
@@ -43,47 +58,42 @@ def main() -> None:
     errors: list[str] = []
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        ctx = browser.new_context(viewport={"width": 390, "height": 844}, device_scale_factor=2, is_mobile=True, has_touch=True)
+        ctx = browser.new_context(viewport={"width": WIDTH, "height": 800}, device_scale_factor=2, is_mobile=True, has_touch=True)
         page = ctx.new_page()
         page.on("pageerror", lambda e: errors.append(str(e)))
-        page.goto(BASE)
-        page.wait_for_selector("text=Konto erstellen", timeout=30000)
+        goto(page, BASE, "text=Konto erstellen")
         shot(page, "01_login")
 
         page.get_by_role("tab", name="Konto erstellen").click()
         page.get_by_label("E-Mail").nth(1).fill(email)
         page.get_by_label("Passwort", exact=True).nth(1).fill("geheim1234")
         page.get_by_label("Passwort wiederholen").fill("geheim1234")
-        click_button(page, "Konto erstellen")
-        page.wait_for_selector("text=Willkommen", timeout=20000)
-        shot(page, "02_onboarding_1")
+        page.get_by_role("button", name="Konto erstellen").click()
+        page.wait_for_selector("text=Wichtig vorab", timeout=30000)
+        shot(page, "02_onboarding_hinweise")
         page.get_by_text("Verstanden").click()
-        click_button(page, "Weiter")
-        shot(page, "03_onboarding_2")
-        click_button(page, "Weiter")
-        shot(page, "04_onboarding_3")
-        click_button(page, "Weiter")
-        shot(page, "05_onboarding_4")
-        click_button(page, "Weiter")
-        shot(page, "06_onboarding_5")
-        click_button(page, "Los geht's")
-        page.wait_for_selector(".st-key-kano_nav", timeout=20000)
-        shot(page, "10_heute", full=False)
+        for i, name in enumerate(["koerper", "ziel", "stil", "ergebnis"], start=3):
+            page.get_by_role("button", name="Weiter", exact=True).click()
+            settle(1.5)
+            shot(page, f"0{i}_onboarding_{name}")
+        page.get_by_role("button", name="Los geht's").click()
+        page.wait_for_selector(".st-key-kano_nav", timeout=30000)
 
-        for key, label in [("tracken", "Tracken"), ("plan", "Plan"), ("fortschritt", "Fortschritt"), ("coach", "Coach"), ("profil", "Profil")]:
+        for idx, (label, tabs) in enumerate(PAGES.items(), start=1):
             page.locator(f".st-key-kano_nav a:has-text('{label}')").first.click()
-            settle(page, 1.0)
-            shot(page, f"2{list('tpfcx').index(key[0]) if key[0] in 'tpfcx' else 9}_{key}", full=False)
+            settle(2)
+            shot(page, f"{idx}0_{label.lower()}")
+            for t_idx, tab in enumerate(tabs, start=1):
+                page.get_by_role("tab", name=tab, exact=True).click()
+                shot(page, f"{idx}{t_idx}_{label.lower()}_{tab.lower()}")
 
-        # Neu laden → muss dank Cookie angemeldet bleiben
-        page.goto(BASE)
-        settle(page, 1.5)
-        still_in = page.locator(".st-key-kano_nav").count() > 0
-        print("Angemeldet nach Reload:", still_in)
+        goto(page, BASE, ".st-key-kano_nav")
+        print("Angemeldet nach Neuladen:", page.locator(".st-key-kano_nav").count() > 0)
+        body = page.inner_text("body")
+        print("Fehlertext auf Seite:", "Traceback" in body)
         browser.close()
-    if errors:
-        print("JS-Fehler:", *errors, sep="\n  ")
-    print("fertig →", OUT)
+    print("JS-Fehler:", errors or "keine")
+    print("Screenshots →", OUT.resolve())
 
 
 if __name__ == "__main__":

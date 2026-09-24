@@ -207,7 +207,8 @@ else:
             ui.item_rows([
                 ("Grundumsatz (Mifflin-St-Jeor)", f"{ui.fmt_int(bmr)} kcal"),
                 (f"× Aktivität ({nutrition.activity_factor(ob['activity']):.3g})".replace(".", ","), f"{ui.fmt_int(result.tdee)} kcal"),
-                ("Defizit" if result.deficit > 0 else ("Überschuss" if result.deficit < 0 else "Anpassung"), f"{ui.fmt_int(-result.deficit)} kcal"),
+                ("Defizit" if result.deficit > 0 else ("Überschuss" if result.deficit < 0 else "Anpassung"),
+                 f"{'−' if result.deficit > 0 else '+'}{ui.fmt_int(abs(result.deficit))} kcal"),
                 ("Tagesziel", f"{ui.fmt_int(result.target_kcal)} kcal"),
             ]),
         )

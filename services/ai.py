@@ -15,13 +15,15 @@ import base64
 import io
 import os
 from datetime import date
-from typing import Iterator, TypeVar
+from typing import TYPE_CHECKING, Iterator, TypeVar
 
-import anthropic
 from PIL import Image, ImageOps
 from pydantic import BaseModel, ValidationError
 
 from services.ai_schemas import BarcodeDigits, MealEstimate, Recipe, WeekPlan
+
+if TYPE_CHECKING:  # das SDK wird erst beim ersten KI-Aufruf geladen (spart ~1 s beim App-Start)
+    import anthropic
 
 DEFAULT_MODEL = "claude-opus-5"
 FALLBACK_MODELS = {"claude-opus-5", "claude-fable-5-1"}  # Modelle mit fallbacks="default"
@@ -61,6 +63,8 @@ _client: anthropic.Anthropic | None = None
 
 
 def _get_client() -> anthropic.Anthropic:
+    import anthropic
+
     global _client
     key = _secret("ANTHROPIC_API_KEY")
     if not key:
@@ -83,6 +87,8 @@ def _request_options(effort: str) -> dict:
 
 
 def _translate(exc: Exception) -> AIError:
+    import anthropic
+
     if isinstance(exc, AIError):
         return exc
     if isinstance(exc, anthropic.AuthenticationError):
