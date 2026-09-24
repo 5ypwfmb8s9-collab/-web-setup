@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import clock  # noqa: E402
 from db import repo  # noqa: E402
-from services import auth, energy  # noqa: E402
+from services import auth, energy, planning  # noqa: E402
 
 EMAIL = sys.argv[1] if len(sys.argv) > 1 else "demo@kano.app"
 PASSWORD = sys.argv[2] if len(sys.argv) > 2 else "demo1234"
@@ -44,6 +44,45 @@ MEALS = {
         [("Proteinriegel", 55, 198, 18, 19, 7)],
     ],
 }
+
+
+def _ing(name, qty, unit, section):
+    return {"name": name, "qty": qty, "unit": unit, "section": section}
+
+
+def demo_plan(start):
+    """Statischer Beispielplan (so sieht eine Claude-Antwort aus) – nur für die Demo."""
+    breakfast = {"slot": "fruehstueck", "time": "07:30", "name": "Overnight Oats mit Beeren", "kcal": 390, "protein": 22,
+                 "carbs": 52, "fat": 9, "instructions": "Haferflocken mit Skyr und Milch verrühren, über Nacht kühlen, Beeren darauf.",
+                 "prep": "", "ingredients": [_ing("Haferflocken", 50, "g", "Trockenware"), _ing("Skyr", 150, "g", "Kühlregal"),
+                                             _ing("Milch 1,5 %", 100, "ml", "Kühlregal"), _ing("Beerenmischung TK", 80, "g", "Tiefkühl")]}
+    prep_lunch = {"slot": "mittag", "time": "12:30", "name": "Linsen-Gemüse-Curry mit Reis", "kcal": 560, "protein": 24,
+                  "carbs": 80, "fat": 14, "instructions": "Zwiebel und Gemüse anbraten, Linsen, Tomaten und Kokosmilch dazu, 20 Min köcheln.",
+                  "prep": "Meal-Prep: für 3 Tage kochen",
+                  "ingredients": [_ing("Rote Linsen", 240, "g", "Trockenware"), _ing("Reis", 210, "g", "Trockenware"),
+                                  _ing("Kokosmilch", 400, "ml", "Konserven & Gläser"), _ing("Tomaten gehackt (Dose)", 400, "g", "Konserven & Gläser"),
+                                  _ing("Zwiebeln", 150, "g", "Obst & Gemüse"), _ing("Karotten", 300, "g", "Obst & Gemüse"),
+                                  _ing("Spinat TK", 300, "g", "Tiefkühl")]}
+    reheat = {**prep_lunch, "prep": "vorgekocht", "ingredients": []}
+    dinners = [
+        ("Ofengemüse mit Feta", [_ing("Paprika", 150, "g", "Obst & Gemüse"), _ing("Zucchini", 200, "g", "Obst & Gemüse"), _ing("Feta", 75, "g", "Kühlregal"), _ing("Kartoffeln", 250, "g", "Obst & Gemüse")], 520),
+        ("Vollkornbrot mit Hüttenkäse & Gurke", [_ing("Vollkornbrot", 100, "g", "Brot & Backwaren"), _ing("Hüttenkäse", 150, "g", "Kühlregal"), _ing("Gurke", 0.5, "Stk", "Obst & Gemüse")], 430),
+        ("Hähnchen-Wraps mit Salat", [_ing("Tortilla-Wraps", 2, "Stk", "Brot & Backwaren"), _ing("Hähnchenbrustfilet", 150, "g", "Fleisch & Fisch"), _ing("Eisbergsalat", 0.25, "Stk", "Obst & Gemüse"), _ing("Joghurt natur", 50, "g", "Kühlregal")], 580),
+    ]
+    days = []
+    for i in range(7):
+        d = start + timedelta(days=i)
+        dn, ings, kcal = dinners[i % 3]
+        lunch = prep_lunch if i in (0, 3) else (reheat if i in (1, 2, 4, 5) else {**prep_lunch, "name": "Nudeln mit Tomatensoße", "prep": "", "ingredients": [_ing("Vollkornnudeln", 90, "g", "Trockenware"), _ing("Passierte Tomaten", 200, "g", "Konserven & Gläser")]})
+        days.append({"date": d.isoformat(), "shift": "frei", "meals": [
+            breakfast, lunch,
+            {"slot": "snack", "time": "15:30", "name": "Apfel & Mandeln", "kcal": 180, "protein": 5, "carbs": 20, "fat": 9,
+             "instructions": "", "prep": "", "ingredients": [_ing("Äpfel", 150, "g", "Obst & Gemüse"), _ing("Mandeln", 15, "g", "Trockenware")]},
+            {"slot": "abend", "time": "18:30", "name": dn, "kcal": kcal, "protein": 30, "carbs": 45, "fat": 18,
+             "instructions": "Einfach und in 20 Minuten fertig.", "prep": "", "ingredients": ings},
+        ]})
+    return {"days": days, "prep_notes": "Sonntag und Mittwoch das Linsen-Curry für je 3 Tage kochen und portioniert kühlen.",
+            "estimated_cost_eur": 31.5, "tips": "Overnight Oats abends vorbereiten – morgens spart das Zeit."}
 
 
 def main() -> None:
@@ -96,6 +135,10 @@ def main() -> None:
         energy.ensure_current(uid, profile, on=week, force=True)
         week += timedelta(days=7)
     repo.upsert_exception(uid, clock.week_start(today) + timedelta(days=5), 2600, "Geburtstag von Sam")
+    plan = demo_plan(today)
+    plan_id = repo.save_plan(uid, clock.week_start(today), {"start": today.isoformat(), "days": 7, "persons": 2,
+                                                            "budget_eur": 70, "meal_prep": True}, plan)
+    planning.rebuild_shopping(uid, plan_id, plan, 2)
     print(f"Demo-Konto angelegt: {EMAIL} / {PASSWORD} (User-ID {uid})")
 
 

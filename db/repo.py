@@ -564,12 +564,15 @@ def latest_plan(user_id: int) -> Row | None:
         )
 
 
-def update_plan(user_id: int, plan_id: int, plan: Row) -> None:
+def update_plan(user_id: int, plan_id: int, plan: Row, params: Row | None = None) -> None:
+    values: Row = {"plan": plan}
+    if params is not None:
+        values["params"] = params
     with _tx() as c:
         c.execute(
             update(s.meal_plans)
             .where(and_(s.meal_plans.c.id == plan_id, s.meal_plans.c.user_id == user_id))
-            .values(plan=plan)
+            .values(**values)
         )
 
 

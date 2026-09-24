@@ -19,7 +19,7 @@ from typing import Iterator, TypeVar
 
 import anthropic
 from PIL import Image, ImageOps
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from services.ai_schemas import BarcodeDigits, MealEstimate, Recipe, WeekPlan
 
@@ -99,6 +99,8 @@ def _translate(exc: Exception) -> AIError:
         return AIError("Die KI ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.")
     if isinstance(exc, anthropic.APIConnectionError):
         return AIError("Keine Verbindung zur KI. Bitte Internetverbindung prüfen.")
+    if isinstance(exc, (ValidationError, ValueError)):
+        return AIError("Die KI-Antwort hatte ein unerwartetes Format. Bitte nochmal versuchen.")
     return AIError("Bei der KI-Anfrage ist etwas schiefgelaufen.")
 
 
