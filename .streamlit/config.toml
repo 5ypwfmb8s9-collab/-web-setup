@@ -1,0 +1,31 @@
+# KANO – Streamlit-Konfiguration
+# Dunkles, minimalistisches Theme. Feinheiten (Gradient, Navigation) stehen in assets/styles.css.
+
+[theme]
+base = "dark"
+primaryColor = "#7B61FF"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#111111"
+textColor = "#F2F2F2"
+linkColor = "#9D8BFF"
+borderColor = "#1F1F1F"
+showWidgetBorder = false
+baseRadius = "12px"
+buttonRadius = "14px"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap, sans-serif"
+headingFontWeights = [800, 700, 700, 600, 600, 600]
+chartCategoricalColors = ["#2870EA", "#7B61FF", "#E3008C", "#FF8C00", "#00B7C3"]
+
+[client]
+# Menü, „Deploy“-Button & Co. ausblenden
+toolbarMode = "minimal"
+showSidebarNavigation = false
+showErrorDetails = false
+
+[server]
+# Liefert static/ unter /app/static/ aus (Icons für den Home-Bildschirm)
+enableStaticServing = true
+maxUploadSize = 15
+
+[browser]
+gatherUsageStats = false
