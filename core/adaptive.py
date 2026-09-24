@@ -56,6 +56,7 @@ def estimate_tdee(
     was_adaptive = bool(previous_tdee) and previous_method == "adaptiv"
     base = previous_tdee if was_adaptive else formula_tdee
     base_label = "letzte Schätzung" if was_adaptive else "Formel (Mifflin-St-Jeor)"
+    base_from = "der letzten Schätzung" if was_adaptive else "der Formel (Mifflin-St-Jeor)"
 
     # 1) Vollständig getrackte Tage im Fenster
     reference = planned_targets or formula_tdee * 0.8
@@ -109,7 +110,7 @@ def estimate_tdee(
         f"In den letzten {WINDOW_DAYS} Tagen hast du an {len(logged)} Tagen vollständig getrackt "
         f"(Ø {_fmt(mean_intake)} kcal) und laut Trend {delta_txt} kg in {span} Tagen {direction}. "
         f"Daraus ergibt sich ein beobachteter Verbrauch von ≈ {_fmt(observed)} kcal/Tag. "
-        f"Ausgehend von {base_label} ({_fmt(base)} kcal) wurde die Schätzung vorsichtig auf "
+        f"Ausgehend von {base_from} ({_fmt(base)} kcal) wurde die Schätzung vorsichtig auf "
         f"{_fmt(tdee)} kcal angepasst (max. ±{max_step} kcal pro Woche)."
     )
     if skipped:

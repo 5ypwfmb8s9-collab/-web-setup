@@ -239,6 +239,7 @@ else:
                 hide_numbers=bool(ob["hide_numbers"]),
                 approx_mode=bool(ob["approx_mode"]),
                 ai_consent=bool(ob["ai_consent"]),
+                care_flag=bool(ob["care_flag"]),
                 disclaimer_accepted_at=datetime.now(timezone.utc),
                 onboarding_done=True,
             )

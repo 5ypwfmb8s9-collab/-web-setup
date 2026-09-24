@@ -69,6 +69,7 @@ profiles = Table(
     Column("household_size", Integer, nullable=False, server_default="1"),
     Column("weekly_budget_eur", Float),
     Column("shift_pattern", JSON),  # {"0": "frueh", ...} Wochentag → Schicht
+    Column("care_flag", Boolean, nullable=False, server_default="0"),  # kein Defizit (s. Onboarding)
     Column("onboarding_done", Boolean, nullable=False, server_default="0"),
     Column("disclaimer_accepted_at", DateTime(timezone=True)),
     Column("updated_at", DateTime(timezone=True), server_default=func.now(), onupdate=func.now()),
