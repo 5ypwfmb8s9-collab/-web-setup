@@ -54,7 +54,23 @@ python scripts/seed_demo.py            # → demo@kano.app / demo1234
 **Ohne API-Schlüssel** funktionieren Suche, Barcode, Favoriten, Gewicht, Bedarf, Wochenbudget,
 Muster, Import/Export – nur die KI-Funktionen sind dann ausgeblendet bzw. deaktiviert.
 
-### Claude (Anthropic API)
+### KI-Anbieter: Google Gemini (kostenlos möglich) oder Claude
+
+**Gemini (kostenloses Kontingent):**
+
+1. Auf <https://aistudio.google.com/apikey> mit einem Google-Konto anmelden → **Create API key**.
+2. In die Secrets eintragen:
+   ```toml
+   GEMINI_API_KEY = "AIza..."
+   # optional: GEMINI_MODEL = "gemini-flash-latest"
+   ```
+
+Hinweis: Im kostenlosen Gemini-Kontingent darf Google Eingaben zur Verbesserung seiner Dienste
+verwenden (auch durch menschliche Prüfer). KANO sendet nur das Nötige (Text/Foto bzw. eine
+Zusammenfassung ohne Namen und E-Mail) und weist in der App darauf hin. Bei Überschreiten des
+Gratis-Limits zeigt KANO eine freundliche „später nochmal“-Meldung.
+
+**Claude (Anthropic API, kostenpflichtig):**
 
 1. API-Schlüssel unter <https://console.anthropic.com> erstellen.
 2. In `.streamlit/secrets.toml` (lokal) bzw. in den App-Secrets (Cloud) eintragen:

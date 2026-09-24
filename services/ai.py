@@ -1,6 +1,11 @@
-"""Claude-Anbindung (Anthropic API).
+"""KI-Anbindung: Claude (Anthropic API) oder Google Gemini.
 
-* API-Key ausschließlich aus `st.secrets["ANTHROPIC_API_KEY"]` (lokal ersatzweise Umgebungsvariable).
+Welcher Anbieter genutzt wird, entscheidet sich an den Secrets:
+* `AI_PROVIDER = "gemini"` bzw. `"anthropic"` erzwingt einen Anbieter,
+* sonst: Claude, wenn `ANTHROPIC_API_KEY` gesetzt ist, andernfalls Gemini, wenn `GEMINI_API_KEY` gesetzt ist.
+Die Gemini-Details stehen in services/ai_gemini.py – die Seiten merken davon nichts.
+
+* API-Keys ausschließlich aus `st.secrets` (lokal ersatzweise Umgebungsvariablen).
 * Modell per `ANTHROPIC_MODEL` änderbar, Standard `claude-opus-5`.
 * Strukturierte Antworten über `messages.parse` + Pydantic → keine fragile JSON-Bastelei.
 * Server-seitige Fallbacks: Lehnt das Modell eine harmlose Anfrage fälschlich ab, übernimmt
@@ -20,6 +25,7 @@ from typing import TYPE_CHECKING, Iterator, TypeVar
 from PIL import Image, ImageOps
 from pydantic import BaseModel, ValidationError
 
+from services import ai_gemini
 from services.ai_schemas import BarcodeDigits, MealEstimate, Recipe, WeekPlan
 
 if TYPE_CHECKING:  # das SDK wird erst beim ersten KI-Aufruf geladen (spart ~1 s beim App-Start)
@@ -51,12 +57,49 @@ def _secret(name: str) -> str | None:
     return os.environ.get(name)
 
 
+def provider() -> str | None:
+    """'anthropic', 'gemini' oder None (keine KI eingerichtet)."""
+    wanted = (_secret("AI_PROVIDER") or "").strip().lower()
+    has_claude, has_gemini = bool(_secret("ANTHROPIC_API_KEY")), bool(_secret("GEMINI_API_KEY"))
+    if wanted == "gemini" and has_gemini:
+        return "gemini"
+    if wanted in ("anthropic", "claude") and has_claude:
+        return "anthropic"
+    if has_claude:
+        return "anthropic"
+    if has_gemini:
+        return "gemini"
+    return None
+
+
+def provider_label() -> str:
+    return {"gemini": "Google Gemini", "anthropic": "Anthropic (Claude)"}.get(provider() or "", "einen KI-Anbieter")
+
+
+def privacy_note() -> str:
+    """Zusatzhinweis zum Datenschutz des aktiven Anbieters (leer, wenn nichts Besonderes gilt)."""
+    if provider() == "gemini":
+        return ("Hinweis zu Google Gemini: Im kostenlosen Kontingent darf Google Eingaben zur Verbesserung seiner "
+                "Dienste verwenden, auch durch menschliche Prüfer. Gib dort daher keine Namen oder sehr persönlichen "
+                "Details ein. Mit einem kostenpflichtigen Gemini-Konto oder Claude entfällt das.")
+    return ""
+
+
 def is_configured() -> bool:
-    return bool(_secret("ANTHROPIC_API_KEY"))
+    return provider() is not None
 
 
 def model() -> str:
+    if provider() == "gemini":
+        return _secret("GEMINI_MODEL") or ai_gemini.DEFAULT_MODEL
     return _secret("ANTHROPIC_MODEL") or DEFAULT_MODEL
+
+
+def _gemini_client():
+    key = _secret("GEMINI_API_KEY")
+    if not key:
+        raise AIError("Die KI-Funktionen sind noch nicht eingerichtet (API-Schlüssel fehlt).")
+    return ai_gemini.get_client(key)
 
 
 _client: anthropic.Anthropic | None = None
@@ -87,10 +130,21 @@ def _request_options(effort: str) -> dict:
 
 
 def _translate(exc: Exception) -> AIError:
-    import anthropic
-
     if isinstance(exc, AIError):
         return exc
+    if isinstance(exc, ai_gemini.Blocked):
+        return AIError("Dazu kann die KI leider keine Antwort geben.")
+    if isinstance(exc, ai_gemini.Truncated):
+        return AIError("Die Antwort wurde zu lang. Bitte die Anfrage etwas eingrenzen.")
+    gemini_msg = ai_gemini.translate(exc, model()) if provider() == "gemini" else None
+    if gemini_msg:
+        return AIError(gemini_msg)
+    if isinstance(exc, (ValidationError, ValueError)):
+        return AIError("Die KI-Antwort hatte ein unerwartetes Format. Bitte nochmal versuchen.")
+    try:
+        import anthropic
+    except ImportError:  # pragma: no cover
+        return AIError("Bei der KI-Anfrage ist etwas schiefgelaufen.")
     if isinstance(exc, anthropic.AuthenticationError):
         return AIError("Der API-Schlüssel für die KI ist ungültig. Bitte in den Secrets prüfen.")
     if isinstance(exc, anthropic.PermissionDeniedError):
@@ -112,6 +166,11 @@ def _translate(exc: Exception) -> AIError:
 
 def _parse(system: str, content: list | str, schema: type[T], *, effort: str = "low", max_tokens: int = 8000) -> T:
     """Eine Anfrage mit strukturierter Antwort (validiert gegen `schema`)."""
+    if provider() == "gemini":
+        try:
+            return ai_gemini.parse(_gemini_client(), model(), system, content, schema, max_tokens)
+        except Exception as exc:  # noqa: BLE001
+            raise _translate(exc) from exc
     try:
         client = _get_client()
         resp = client.beta.messages.parse(
@@ -136,6 +195,8 @@ def _parse(system: str, content: list | str, schema: type[T], *, effort: str = "
 
 def _stream_parse(system: str, content: str, schema: type[T], *, effort: str, max_tokens: int = 32000) -> T:
     """Wie `_parse`, aber gestreamt – für lange Antworten (Wochenplan), vermeidet HTTP-Timeouts."""
+    if provider() == "gemini":
+        return _parse(system, content, schema, effort=effort, max_tokens=max_tokens)
     try:
         client = _get_client()
         with client.beta.messages.stream(
@@ -297,6 +358,12 @@ def coach_system(summary: str, hide_numbers: bool) -> str:
 
 def coach_stream(history: list[dict], summary: str, hide_numbers: bool) -> Iterator[str]:
     """Antwort des Coaches als Text-Stream (für st.write_stream)."""
+    if provider() == "gemini":
+        try:
+            yield from ai_gemini.stream_text(_gemini_client(), model(), coach_system(summary, hide_numbers), history, 8000)
+        except Exception as exc:  # noqa: BLE001
+            raise _translate(exc) from exc
+        return
     try:
         client = _get_client()
         with client.beta.messages.stream(
@@ -323,6 +390,11 @@ def weekly_review(summary: str, hide_numbers: bool, week_start: date) -> str:
         "1 Satz, was gut lief; 1–2 Sätze zu einem erkennbaren Muster (falls vorhanden); "
         "1 kleiner, konkreter Vorschlag für die nächste Woche. Kein Tadel, keine Überschrift."
     )
+    if provider() == "gemini":
+        try:
+            return ai_gemini.text(_gemini_client(), model(), coach_system(summary, hide_numbers), prompt, 4000)
+        except Exception as exc:  # noqa: BLE001
+            raise _translate(exc) from exc
     try:
         client = _get_client()
         resp = client.beta.messages.create(

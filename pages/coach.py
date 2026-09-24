@@ -1,4 +1,4 @@
-"""Coach: lokale Muster, wöchentliche Kurzauswertung und Chat mit Claude."""
+"""Coach: lokale Muster, wöchentliche Kurzauswertung und KI-Chat (Claude oder Gemini)."""
 
 import streamlit as st
 
@@ -47,7 +47,7 @@ else:
 # ---------------------------------------------------------------- Chat
 ui.label("Frag deinen Coach")
 if not ai.is_configured() or not session.ai_allowed():
-    ui.note("Der Chat nutzt Claude. Aktiviere die KI-Funktionen unter <b>Profil → Einstellungen</b>"
+    ui.note("Der Chat nutzt KI. Aktiviere die KI-Funktionen unter <b>Profil → Einstellungen</b>"
             + ("" if ai.is_configured() else " (und hinterlege einen API-Schlüssel)") + ".")
 elif not features.enabled("coach", tier):
     ui.note(features.locked_note("coach"))

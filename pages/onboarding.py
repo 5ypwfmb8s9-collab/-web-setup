@@ -6,7 +6,7 @@ import streamlit as st
 
 from core import clock, nutrition
 from db import repo
-from services import energy
+from services import ai, energy
 from ui import components as ui
 from ui import session, theme
 
@@ -167,8 +167,9 @@ elif step == 3:
     st.html(
         "<p class='kano-small'>Für Freitext- und Foto-Erkennung, Wochenpläne und den Coach werden die jeweils "
         "nötigen Angaben (z. B. dein Text, dein Foto oder eine Zusammenfassung deiner Werte – nie E-Mail oder "
-        "Passwort) an die Anthropic API (Claude) übertragen. Das ist freiwillig und im Profil jederzeit "
-        "widerrufbar. Ohne KI funktionieren Suche, Barcode und alle Auswertungen weiterhin.</p>"
+        f"Passwort) an {ui.esc(ai.provider_label())} übertragen. Das ist freiwillig und im Profil jederzeit "
+        "widerrufbar. Ohne KI funktionieren Suche, Barcode und alle Auswertungen weiterhin."
+        + (f" {ui.esc(ai.privacy_note())}" if ai.privacy_note() else "") + "</p>"
     )
     with st.container(horizontal=True):
         if st.button("Zurück", width="stretch"):

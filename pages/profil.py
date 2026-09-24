@@ -75,7 +75,9 @@ with tab_settings:
     setting("hide_numbers", "Zahlen ausblenden", "Tracking ohne Kalorienanzeige – nur Mahlzeiten und Wohlbefinden.")
     setting("approx_mode", "Ungefähr tracken", "Portionen als klein/mittel/groß statt in Gramm.")
     setting("ai_consent", "KI-Funktionen nutzen",
-            "Freitext, Foto, Wochenplan und Coach senden die nötigen Angaben an die Anthropic API (Claude).")
+            f"Freitext, Foto, Wochenplan und Coach senden die nötigen Angaben an {ai.provider_label()}.")
+    if ai.privacy_note():
+        st.caption(ai.privacy_note())
     if profile.get("ai_consent") and not ai.is_configured():
         st.caption("Hinweis: Auf diesem Server ist noch kein API-Schlüssel hinterlegt.")
     setting("care_flag", "Besondere Situation (kein Defizit)",
@@ -169,7 +171,7 @@ with tab_account:
             """
 - **Deine Gesundheitsdaten** (Gewicht, Essen, Wohlbefinden) werden nur für deine Auswertungen gespeichert.
 - **Passwörter** werden nur als sicherer Hash (scrypt) gespeichert, nie im Klartext.
-- **KI-Funktionen** sind freiwillig. Wenn aktiv, gehen nur die jeweils nötigen Angaben an die Anthropic API:
+- **KI-Funktionen** sind freiwillig. Wenn aktiv, gehen nur die jeweils nötigen Angaben an den KI-Anbieter:
   dein Text/Foto zur Erkennung bzw. eine *Zusammenfassung* deiner Werte für Coach und Pläne – nie E-Mail,
   Passwort oder Name. Fotos werden nicht gespeichert.
 - **Lebensmitteldaten** stammen von Open Food Facts (offene Datenbank); dabei wird nur der Suchbegriff bzw. Barcode übertragen.
@@ -177,6 +179,8 @@ with tab_account:
 - KANO ist **kein Medizinprodukt** und ersetzt keine ärztliche oder ernährungstherapeutische Beratung.
 """
         )
+        if ai.privacy_note():
+            st.caption(ai.privacy_note())
 
     if st.button("Abmelden", width="stretch", icon=":material/logout:"):
         session.sign_out()
