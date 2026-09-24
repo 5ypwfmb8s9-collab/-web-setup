@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from core import adaptive, clock, nutrition, trend
+from core import adaptive, budget, clock, nutrition, trend
 from db import repo
 
 
@@ -97,3 +97,19 @@ def ensure_current(user_id: int, profile: dict, on: date | None = None, force: b
         macros=macros,
         week_start=row["week_start"],
     )
+
+
+def week_budget(user_id: int, profile: dict, on: date | None = None) -> tuple[CurrentTarget, budget.WeekBudget]:
+    """Aktuelles Ziel plus flexible Verteilung über die Woche (inkl. Ausnahmetagen)."""
+    on = on or clock.today()
+    current = ensure_current(user_id, profile, on)
+    week = clock.week_days(on)
+    exceptions = {e["date"]: (e["planned_kcal"], e["note"] or "") for e in repo.list_exceptions(user_id, week[0], week[-1])}
+    wb = budget.plan_week(week, current.target_kcal, nutrition.min_kcal(profile.get("sex") or "d"), exceptions, clock.today())
+    return current, wb
+
+
+def day_target(user_id: int, profile: dict, day: date) -> int:
+    _, wb = week_budget(user_id, profile, day)
+    entry = wb.for_day(day)
+    return entry.target if entry else wb.base

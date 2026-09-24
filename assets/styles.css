@@ -309,3 +309,19 @@ button[kind="tertiary"], [data-testid="stBaseButton-tertiary"] { min-height: 36p
 @media (min-width: 640px) {
   .st-key-kano_nav { padding-left: calc(50% - 280px) !important; padding-right: calc(50% - 280px) !important; }
 }
+
+/* Segmented Controls kompakter, damit 4 Optionen in eine Zeile passen */
+[data-testid="stButtonGroup"] button { padding-left: 6px !important; padding-right: 6px !important; min-height: 42px; }
+[data-testid="stButtonGroup"] button p { font-size: 0.92rem; white-space: nowrap; }
+
+/* Zeilen der „Mahlzeit in Arbeit“ */
+[class*="st-key-pi_row_"] { gap: 6px !important; }
+[class*="st-key-pi_row_"] .stButton button { min-height: 40px; }
+
+/* Call-to-Action-Link im Stil des primären Buttons */
+[class*="st-key-cta_"] [data-testid="stPageLink"] a {
+  justify-content: center; min-height: 50px; border-radius: 14px;
+  background: var(--kano-gradient) !important; color: #fff !important; font-weight: 600;
+  box-shadow: 0 6px 24px -10px rgba(123, 97, 255, 0.7);
+}
+[class*="st-key-cta_"] [data-testid="stPageLink"] a * { color: #fff !important; }

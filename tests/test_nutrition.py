@@ -56,3 +56,36 @@ def test_goal_weight_issues():
     assert n.goal_weight_issues("abnehmen", 170, 70, 50)  # BMI 17,3
     assert n.goal_weight_issues("abnehmen", 170, 70, 75)  # über aktuellem Gewicht
     assert not n.goal_weight_issues("abnehmen", 170, 80, 70)
+
+
+# ---------------------------------------------------------------- flexibles Wochenbudget
+from datetime import date, timedelta  # noqa: E402
+
+from core import budget  # noqa: E402
+
+
+def _week():
+    start = date(2026, 9, 21)  # Montag
+    return [start + timedelta(days=i) for i in range(7)]
+
+
+def test_budget_without_exceptions_is_flat():
+    wb = budget.plan_week(_week(), 1800, 1200, {}, date(2026, 9, 21))
+    assert all(d.target == 1800 for d in wb.days) and wb.total == 7 * 1800
+
+
+def test_birthday_is_spread_over_remaining_days():
+    week = _week()
+    wb = budget.plan_week(week, 1800, 1200, {week[5]: (2700, "Geburtstag")}, week[0])
+    # 900 kcal extra auf 6 Tage = 150 weniger pro Tag
+    assert wb.for_day(week[5]).target == 2700
+    assert wb.for_day(week[0]).target == 1650
+    assert wb.total == 7 * 1800
+
+
+def test_budget_respects_floor_and_past_days():
+    week = _week()
+    wb = budget.plan_week(week, 1400, 1200, {week[6]: (3400, "Hochzeit")}, week[4])
+    assert all(d.target >= 1200 for d in wb.days)
+    assert wb.for_day(week[0]).target == 1400  # Vergangenheit unverändert
+    assert wb.unallocated > 0 and wb.notes
