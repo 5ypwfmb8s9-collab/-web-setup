@@ -89,3 +89,16 @@ def test_budget_respects_floor_and_past_days():
     assert all(d.target >= 1200 for d in wb.days)
     assert wb.for_day(week[0]).target == 1400  # Vergangenheit unverändert
     assert wb.unallocated > 0 and wb.notes
+
+
+def test_feature_flags_unlocked_and_free_core():
+    from core import features
+
+    assert features.enabled("coach", "free")  # aktuell alles frei
+    old = features.ALL_UNLOCKED
+    try:
+        features.ALL_UNLOCKED = False
+        assert features.enabled("tracking", "free") and features.enabled("gewichtstrend", "free")
+        assert not features.enabled("coach", "free") and features.enabled("coach", "premium")
+    finally:
+        features.ALL_UNLOCKED = old

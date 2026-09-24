@@ -23,7 +23,7 @@ SUPPORT_HTML = (
 
 # Formulierungen, die auf problematisches Essverhalten hindeuten können (Kleinschreibung)
 _WARNING_PATTERNS = [
-    r"erbrech", r"übergeb", r"kotz", r"finger in den hals",
+    r"erbrech", r"erbroch", r"übergeb", r"kotz", r"finger in den hals",
     r"abführ", r"entwässerungstablett",
     r"essanf[aä]ll", r"fressattack", r"fressanf[aä]ll", r"kontrollverlust", r"nicht aufhören (zu|mit) essen",
     r"(gar )?nichts (mehr )?(ge)?ess", r"tagelang nicht", r"hunger(n|e) mich", r"will nicht mehr essen",

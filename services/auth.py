@@ -124,7 +124,7 @@ def issue_token(user_id: int) -> IssuedToken:
 
 
 def user_for_token(token: str | None) -> int | None:
-    if not token or len(token) > 200:
+    if not isinstance(token, str) or not token or len(token) > 200:
         return None
     return repo.user_id_for_token(_token_hash(token))
 
