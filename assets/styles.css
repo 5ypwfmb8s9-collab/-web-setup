@@ -1,0 +1,333 @@
+/* ==========================================================================
+   KANO – Design-System
+   Schwarz, sehr dunkle Flächen, ein sparsam eingesetzter Spectrum-Gradient.
+   Wird zentral von ui/theme.py geladen.
+   ========================================================================== */
+
+:root {
+  --kano-bg: #000000;
+  --kano-surface: #0d0d0d;
+  --kano-surface-2: #141414;
+  --kano-line: #1c1c1c;
+  --kano-text: #f2f2f2;
+  --kano-muted: #9a9a9a;
+  --kano-faint: #5c5c5c;
+  --kano-blue: #2870ea;
+  --kano-violet: #7b61ff;
+  --kano-pink: #e3008c;
+  --kano-orange: #ff8c00;
+  --kano-teal: #00b7c3;
+  --kano-gradient: linear-gradient(90deg, #2870ea 0%, #7b61ff 35%, #e3008c 70%, #ff8c00 100%);
+  --kano-gradient-diag: linear-gradient(135deg, #2870ea 0%, #7b61ff 35%, #e3008c 70%, #ff8c00 100%);
+  --kano-radius: 16px;
+  --kano-radius-sm: 12px;
+  --kano-nav-height: 68px;
+}
+
+/* ---------- Grundgerüst -------------------------------------------------- */
+
+html, body, .stApp, [data-testid="stAppViewContainer"] {
+  background: var(--kano-bg) !important;
+}
+
+/* Streamlit-Standardelemente ausblenden (Header, Menü, Deploy, Footer, Sidebar) */
+header[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+[data-testid="stSidebar"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stMainMenu"],
+#MainMenu,
+footer {
+  display: none !important;
+}
+
+/* Einspaltig, mobil optimiert; unten Platz für die feste Navigation */
+.stMainBlockContainer, [data-testid="stMainBlockContainer"] {
+  max-width: 560px !important;
+  padding: 1.1rem 1rem calc(var(--kano-nav-height) + 2.5rem + env(safe-area-inset-bottom)) 1rem !important;
+}
+
+/* Unsichtbare Hilfselemente (CSS/JS-Injektion) sollen keinen Abstand erzeugen */
+.stElementContainer:has(> .stHtml > style:only-child),
+.stElementContainer:has(.kano-invisible) {
+  display: none !important;
+}
+
+h1, h2, h3, h4 { letter-spacing: -0.02em; }
+h1 { font-size: 1.9rem !important; }
+h2 { font-size: 1.45rem !important; }
+h3 { font-size: 1.15rem !important; }
+p, li { line-height: 1.55; }
+a { text-decoration: none; }
+
+/* ---------- Typografie-Helfer -------------------------------------------- */
+
+.kano-logo {
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  background: var(--kano-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  display: inline-block;
+  line-height: 1;
+}
+.kano-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 0 0 0.6rem 0;
+}
+.kano-topbar .kano-logo { font-size: 1.25rem; }
+.kano-topbar .kano-date { color: var(--kano-muted); font-size: 0.85rem; }
+
+.kano-hero-logo { font-size: 3.4rem; margin: 2.2rem 0 0.4rem 0; }
+.kano-tagline { color: var(--kano-muted); font-size: 1rem; margin-bottom: 1.8rem; }
+
+.kano-title { font-size: 1.6rem; font-weight: 800; margin: 0.2rem 0 0.1rem 0; letter-spacing: -0.02em; }
+.kano-subtitle { color: var(--kano-muted); font-size: 0.95rem; margin-bottom: 1rem; }
+.kano-muted { color: var(--kano-muted); }
+.kano-small { font-size: 0.85rem; color: var(--kano-muted); }
+.kano-label { font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--kano-muted); font-weight: 600; }
+.kano-big { font-size: 2rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; }
+.kano-gradient-text {
+  background: var(--kano-gradient); -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+
+/* ---------- Karten --------------------------------------------------------- */
+
+.kano-card {
+  background: var(--kano-surface);
+  border-radius: var(--kano-radius);
+  padding: 16px 18px;
+  margin: 0 0 12px 0;
+}
+/* Dünner Gradient-Rahmen für wichtige Karten */
+.kano-card.glow {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--kano-surface), var(--kano-surface)) padding-box,
+    var(--kano-gradient-diag) border-box;
+}
+.kano-card h4 { margin: 0 0 6px 0; font-size: 1rem; }
+.kano-card p { margin: 0; }
+
+/* Streamlit-Container mit border=True dezent als Karte */
+[data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"]) {
+  border-radius: var(--kano-radius) !important;
+}
+.stVerticalBlock[class*="st-key-card"] {
+  background: var(--kano-surface);
+  border-radius: var(--kano-radius);
+  padding: 14px 16px;
+}
+.stVerticalBlock[class*="st-key-glowcard"] {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--kano-surface), var(--kano-surface)) padding-box,
+    var(--kano-gradient-diag) border-box;
+  border-radius: var(--kano-radius);
+  padding: 14px 16px;
+}
+
+/* ---------- Fortschritt -------------------------------------------------- */
+
+.kano-ring-wrap { display: flex; justify-content: center; margin: 4px 0 8px 0; }
+.kano-ring { position: relative; width: 210px; height: 210px; }
+.kano-ring .track {
+  position: absolute; inset: 0; border-radius: 50%;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 13px), #000 calc(100% - 12px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 13px), #000 calc(100% - 12px));
+}
+.kano-ring .center {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+}
+.kano-ring .value { font-size: 2.4rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1; }
+.kano-ring .unit { font-size: 0.85rem; color: var(--kano-muted); margin-top: 6px; }
+.kano-ring .sub { font-size: 0.8rem; color: var(--kano-faint); margin-top: 2px; }
+
+.kano-bar { margin: 10px 0; }
+.kano-bar .row { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 5px; }
+.kano-bar .row span:last-child { color: var(--kano-muted); }
+.kano-bar .track { height: 8px; border-radius: 99px; background: var(--kano-surface-2); overflow: hidden; }
+.kano-bar .fill { height: 100%; border-radius: 99px; background: var(--kano-gradient); }
+
+.kano-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 6px 0 12px 0; }
+.kano-stat { background: var(--kano-surface); border-radius: var(--kano-radius-sm); padding: 12px 10px; text-align: center; }
+.kano-stat .v { font-size: 1.2rem; font-weight: 700; }
+.kano-stat .l { font-size: 0.72rem; color: var(--kano-muted); margin-top: 2px; }
+
+/* ---------- Listen -------------------------------------------------------- */
+
+.kano-meal-head { display: flex; justify-content: space-between; align-items: baseline; margin: 14px 0 4px 0; }
+.kano-meal-head .t { font-weight: 700; }
+.kano-meal-head .k { color: var(--kano-muted); font-size: 0.85rem; }
+.kano-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--kano-line); font-size: 0.93rem; }
+.kano-item:last-child { border-bottom: none; }
+.kano-item .n { color: var(--kano-text); }
+.kano-item .d { color: var(--kano-muted); font-size: 0.85rem; white-space: nowrap; padding-left: 10px; }
+.kano-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 0.75rem;
+  background: var(--kano-surface-2); color: var(--kano-muted); margin: 0 6px 6px 0;
+}
+.kano-chip.active { color: #fff; background: linear-gradient(var(--kano-surface-2), var(--kano-surface-2)) padding-box, var(--kano-gradient) border-box; border: 1px solid transparent; }
+
+/* Hinweise – bewusst neutral, keine roten Warnungen */
+.kano-note {
+  background: var(--kano-surface); border-radius: var(--kano-radius-sm);
+  padding: 12px 14px; margin: 8px 0 12px 0; font-size: 0.92rem; color: #d6d6d6;
+  border-left: 3px solid var(--kano-violet);
+}
+.kano-note.care { border-left-color: var(--kano-teal); }
+
+/* ---------- Buttons -------------------------------------------------------- */
+
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button, .stLinkButton > a {
+  min-height: 46px;
+  border-radius: 14px !important;
+  font-weight: 600;
+  border: none !important;
+  background: var(--kano-surface-2);
+  color: var(--kano-text);
+  transition: transform 0.08s ease, opacity 0.15s ease;
+}
+.stButton > button:active, .stFormSubmitButton > button:active { transform: scale(0.98); }
+.stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
+  color: #fff; background: #1b1b1b;
+}
+button[kind="primary"], button[kind="primaryFormSubmit"],
+[data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"] {
+  background: var(--kano-gradient) !important;
+  color: #fff !important;
+  box-shadow: 0 6px 24px -10px rgba(123, 97, 255, 0.7);
+}
+button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
+[data-testid="stBaseButton-primaryFormSubmit"]:hover { opacity: 0.92; }
+button[kind="tertiary"], [data-testid="stBaseButton-tertiary"] { min-height: 36px; background: transparent !important; }
+
+/* ---------- Eingaben ------------------------------------------------------ */
+
+.stTextInput input, .stNumberInput input, .stTextArea textarea, .stDateInput input,
+[data-baseweb="select"] > div {
+  background: var(--kano-surface-2) !important;
+  border-radius: var(--kano-radius-sm) !important;
+  font-size: 16px !important; /* verhindert Auto-Zoom auf iOS */
+}
+.stTextInput > div > div, .stNumberInput > div > div, .stTextArea > div > div, .stDateInput > div > div {
+  border-radius: var(--kano-radius-sm) !important;
+  border-color: transparent !important;
+}
+[data-testid="stForm"] { border: none !important; padding: 0 !important; }
+[data-testid="stExpander"] details { border: none !important; background: var(--kano-surface); border-radius: var(--kano-radius) !important; }
+[data-testid="stExpander"] summary { padding: 14px 16px; }
+
+/* Tabs: aktive Markierung als Gradient-Linie */
+.stTabs [data-baseweb="tab-list"] { gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.stTabs [data-baseweb="tab-list"]::-webkit-scrollbar { display: none; }
+.stTabs [data-baseweb="tab"] { padding: 8px 12px; font-weight: 600; color: var(--kano-muted); }
+.stTabs [aria-selected="true"] { color: var(--kano-text) !important; }
+.stTabs [data-baseweb="tab-highlight"] { background: var(--kano-gradient) !important; height: 2px; }
+.stTabs [data-baseweb="tab-border"] { background: var(--kano-line) !important; }
+
+/* Segmented control / Pills: aktive Auswahl mit Gradient-Rahmen */
+[data-testid="stBaseButton-segmented_controlActive"], [data-testid="stBaseButton-pillsActive"] {
+  border: 1px solid transparent !important;
+  background: linear-gradient(#171717, #171717) padding-box, var(--kano-gradient) border-box !important;
+  color: #fff !important;
+}
+[data-testid="stBaseButton-segmented_control"], [data-testid="stBaseButton-pills"] {
+  background: var(--kano-surface-2) !important; border-color: transparent !important;
+}
+
+/* Slider-Griff */
+.stSlider [role="slider"] { background: #fff !important; box-shadow: 0 0 0 4px rgba(123,97,255,.35) !important; }
+
+/* Tabellen dezenter */
+[data-testid="stDataFrame"], [data-testid="stDataEditor"] { border-radius: var(--kano-radius-sm); overflow: hidden; }
+
+/* Chat */
+[data-testid="stChatMessage"] { background: var(--kano-surface); border-radius: var(--kano-radius); padding: 12px 14px; }
+[data-testid="stBottom"] > div, [data-testid="stBottomBlockContainer"] { background: var(--kano-bg) !important; }
+[data-testid="stBottomBlockContainer"] { padding-bottom: calc(var(--kano-nav-height) + 14px + env(safe-area-inset-bottom)) !important; max-width: 560px; }
+[data-testid="stChatInput"] { border-radius: var(--kano-radius) !important; background: var(--kano-surface-2) !important; }
+
+/* Kamera-Eingabe runden */
+[data-testid="stCameraInput"] video, [data-testid="stCameraInput"] img { border-radius: var(--kano-radius); }
+
+/* Toasts */
+[data-testid="stToast"] { background: var(--kano-surface-2) !important; border-radius: var(--kano-radius-sm) !important; }
+
+/* ---------- Navigation unten --------------------------------------------- */
+
+.st-key-kano_nav {
+  position: fixed !important;
+  left: 0; right: 0; bottom: 0;
+  z-index: 999990;
+  background: rgba(0, 0, 0, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--kano-line);
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom)) 6px !important;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  justify-content: space-around !important;
+  gap: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+}
+.st-key-kano_nav > div { flex: 1 1 0 !important; min-width: 0 !important; width: auto !important; }
+.st-key-kano_nav [class*="st-key-nav_"] { position: relative; align-items: center; gap: 0 !important; }
+.st-key-kano_nav [data-testid="stPageLink"] { width: 100%; }
+.st-key-kano_nav [data-testid="stPageLink"] a,
+.st-key-kano_nav [data-testid="stPageLink-NavLink"] {
+  display: flex !important; flex-direction: column !important; align-items: center !important;
+  justify-content: center; gap: 3px; padding: 6px 0 !important; margin: 0 !important;
+  width: 100%; background: transparent !important; border-radius: 12px;
+  color: var(--kano-faint) !important; min-height: 52px;
+}
+.st-key-kano_nav [data-testid="stPageLink"] a span,
+.st-key-kano_nav [data-testid="stPageLink"] a p {
+  font-size: 0.66rem !important; font-weight: 600; line-height: 1.1; margin: 0 !important;
+  color: inherit !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.st-key-kano_nav [data-testid="stPageLink"] a [data-testid="stIconMaterial"] {
+  font-size: 1.5rem !important; line-height: 1 !important;
+}
+/* Aktiver Eintrag: Icon im Gradient + feine Linie oben */
+.st-key-kano_nav [class*="st-key-nav_active_"] [data-testid="stPageLink"] a { color: var(--kano-text) !important; }
+.st-key-kano_nav [class*="st-key-nav_active_"] [data-testid="stIconMaterial"] {
+  background: var(--kano-gradient-diag); -webkit-background-clip: text; background-clip: text; color: transparent !important;
+}
+.st-key-kano_nav [class*="st-key-nav_active_"]::before {
+  content: ""; position: absolute; top: -7px; left: 28%; right: 28%; height: 2px; border-radius: 2px;
+  background: var(--kano-gradient);
+}
+
+/* Größere Bildschirme: Navigation mittig begrenzen */
+@media (min-width: 640px) {
+  .st-key-kano_nav { padding-left: calc(50% - 280px) !important; padding-right: calc(50% - 280px) !important; }
+}
+
+/* Segmented Controls kompakter, damit 4 Optionen in eine Zeile passen */
+[data-testid="stButtonGroup"] button { padding-left: 6px !important; padding-right: 6px !important; min-height: 42px; }
+[data-testid="stButtonGroup"] button p { font-size: 0.92rem; white-space: nowrap; }
+
+/* Zeilen der „Mahlzeit in Arbeit“ */
+[class*="st-key-pi_row_"] { gap: 6px !important; }
+[class*="st-key-pi_row_"] .stButton button { min-height: 40px; }
+
+/* Call-to-Action-Link im Stil des primären Buttons */
+[class*="st-key-cta_"] [data-testid="stPageLink"] a {
+  justify-content: center; min-height: 50px; border-radius: 14px;
+  background: var(--kano-gradient) !important; color: #fff !important; font-weight: 600;
+  box-shadow: 0 6px 24px -10px rgba(123, 97, 255, 0.7);
+}
+[class*="st-key-cta_"] [data-testid="stPageLink"] a * { color: #fff !important; }
+
+/* Deaktivierte Buttons deutlich als inaktiv zeigen (auch mit Gradient) */
+.stButton > button:disabled, .stFormSubmitButton > button:disabled,
+[data-testid="stBaseButton-primary"]:disabled, [data-testid="stBaseButton-primaryFormSubmit"]:disabled {
+  opacity: 0.35 !important; box-shadow: none !important; cursor: not-allowed;
+}
