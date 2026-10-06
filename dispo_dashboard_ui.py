@@ -6,15 +6,18 @@ Ordner (Netzlaufwerk), daher nur in der lokal installierten Version
 verfuegbar, nicht in der zentral gehosteten.
 """
 
+import json
 import os
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 from dispo_dashboard import config, loaders, logic
 
 ORDNER_DATEI = ".dispo_sap_ordner.txt"
+KONTAKTE_DATEI = ".dispo_kontakte.json"
 
 QUELLEN = [
     ("bedarf", "Bedarf (Lieferplan-Einteilungen)"),
@@ -67,6 +70,19 @@ def lade_gespeicherten_ordner() -> str:
 
 def speichere_ordner(pfad: str) -> None:
     Path(ORDNER_DATEI).write_text(pfad, encoding="utf-8")
+
+
+def lade_kontakte() -> dict:
+    try:
+        return json.loads(Path(KONTAKTE_DATEI).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def speichere_kontakte(kontakte: dict) -> None:
+    Path(KONTAKTE_DATEI).write_text(
+        json.dumps(kontakte, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
 
 def _lade_und_berechne(ordner: str) -> dict:
@@ -203,12 +219,80 @@ def render_dispo_tab() -> None:
 
     # --- Deckung je Artikel --------------------------------------------------
     st.subheader("Deckung je Artikel")
+    st.caption("Zeile anklicken (Kaestchen links), um Reichweite-Grafik und Kontakt-E-Mail zu sehen.")
     deckung = _filter_auswahl(artikel, "Ampel", "Ampel", "deckung")
-    st.dataframe(
+    auswahl_ereignis = st.dataframe(
         deckung[ARTIKEL_SPALTEN].style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
         hide_index=True,
         use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="dispo_artikel_tabelle",
     )
+
+    ausgewaehlte_zeilen = auswahl_ereignis.selection.rows if auswahl_ereignis else []
+    if ausgewaehlte_zeilen:
+        gewaehlt = deckung.iloc[ausgewaehlte_zeilen[0]]
+        norm_nr = gewaehlt["Norm-Nr"]
+        norm_nr_key = str(norm_nr)
+
+        st.markdown(f"**Reichweite: {norm_nr} – {gewaehlt['Kurztext']}**")
+        grafik_spalte, mail_spalte = st.columns([2, 1])
+
+        with grafik_spalte:
+            artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr].sort_values("Ladedatum")
+            if artikel_positionen.empty:
+                st.info("Keine Positionen fuer diesen Artikel gefunden.")
+            else:
+                verlauf = pd.concat([
+                    pd.DataFrame({
+                        "Ladedatum": artikel_positionen["Ladedatum"],
+                        "Menge": artikel_positionen["Bestand verfügbar"]
+                        + artikel_positionen["Zugang bis Ladedatum"],
+                        "Reihe": "Verfügbare Deckung",
+                    }),
+                    pd.DataFrame({
+                        "Ladedatum": artikel_positionen["Ladedatum"],
+                        "Menge": artikel_positionen["Kum. Bedarf Artikel"],
+                        "Reihe": "Kumulierter Bedarf",
+                    }),
+                ])
+                chart = (
+                    alt.Chart(verlauf)
+                    .mark_line(point=True, strokeWidth=2.5)
+                    .encode(
+                        x=alt.X("Ladedatum:T", title="Ladedatum"),
+                        y=alt.Y("Menge:Q", title="Menge"),
+                        color=alt.Color(
+                            "Reihe:N",
+                            scale=alt.Scale(
+                                domain=["Verfügbare Deckung", "Kumulierter Bedarf"],
+                                range=["#3B82F6", "#EC4899"],
+                            ),
+                            legend=alt.Legend(title=None),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("Ladedatum:T", title="Ladedatum"),
+                            alt.Tooltip("Reihe:N", title="Reihe"),
+                            alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=320)
+                )
+                st.altair_chart(chart, use_container_width=True)
+
+        with mail_spalte:
+            kontakte = st.session_state.setdefault("dispo_kontakte", lade_kontakte())
+            neue_mail = st.text_input(
+                "E-Mail Ansprechpartner",
+                value=kontakte.get(norm_nr_key, ""),
+                key=f"dispo_mail_{norm_nr_key}",
+            )
+            if st.button("E-Mail speichern", key=f"dispo_mail_speichern_{norm_nr_key}"):
+                kontakte[norm_nr_key] = neue_mail
+                speichere_kontakte(kontakte)
+                st.session_state["dispo_kontakte"] = kontakte
+                st.success("Gespeichert.")
 
     # --- Positionen -----------------------------------------------------------
     st.subheader("Positionen")
