@@ -39,7 +39,7 @@ from reklamation_lokal import (
     speichere_pdf,
 )
 
-st.set_page_config(page_title="VW AI", page_icon="✨", layout="wide")
+st.set_page_config(page_title="VW AI", page_icon="assets/icon.png", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Globales Styling: dunkler Hintergrund + Copilot-Gradient-Schimmer auf
