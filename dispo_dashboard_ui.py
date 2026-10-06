@@ -1,13 +1,14 @@
 """Oberflaeche fuer den Reiter "Dashboard Dispo" in VW AI.
 
 Zeigt die von dispo_dashboard (config/loaders/logic - unveraendert genutzt)
-berechnete Auswertung an. Die taeglichen SAP-Exporte kommen aus einem lokalen
-Ordner (Netzlaufwerk), daher nur in der lokal installierten Version
-verfuegbar, nicht in der zentral gehosteten.
+berechnete Auswertung an. Die taeglichen SAP-Exporte koennen entweder direkt
+hochgeladen werden (funktioniert ueberall, auch auf Streamlit Cloud) oder -
+nur in der lokal installierten Version - aus einem Ordner (z. B. Netzlaufwerk)
+gelesen werden.
 """
 
 import json
-import os
+import tempfile
 from pathlib import Path
 
 import altair as alt
@@ -131,17 +132,14 @@ def render_dispo_tab() -> None:
         unsafe_allow_html=True,
     )
 
-    if os.name != "nt":
-        st.info(
-            "Dashboard Dispo ist nur in der lokal installierten Version "
-            "verfuegbar (greift auf einen Windows-/Netzlaufwerk-Ordner mit "
-            "den taeglichen SAP-Exporten zu, den eine zentral gehostete "
-            "Version nicht erreichen kann). Bitte dafuer die lokale "
-            "Installation auf einem Windows-PC nutzen."
-        )
-        return
+    hochgeladen = st.file_uploader(
+        "SAP-Exporte hochladen (Bedarf, Bestand, Zugänge, optional Stock Report)",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        key="dispo_upload",
+    )
 
-    with st.expander("Ordner-Einstellungen"):
+    with st.expander("Oder: Ordner mit SAP-Exporten (nur lokal verfuegbar, z. B. Netzlaufwerk)"):
         ordner = st.text_input(
             "Ordner mit den taeglichen SAP-Exporten",
             value=st.session_state.get("dispo_ordner", lade_gespeicherten_ordner()),
@@ -152,20 +150,35 @@ def render_dispo_tab() -> None:
             st.session_state["dispo_ordner"] = ordner
             st.success("Ordner gemerkt - wird beim naechsten Start automatisch vorausgefuellt.")
 
-    if not ordner:
-        st.info("Bitte oben einen Ordner mit den SAP-Exporten angeben.")
+    if hochgeladen:
+        aktuelle_signatur = tuple(sorted((d.name, d.size) for d in hochgeladen))
+        quelle_ordner = st.session_state.setdefault(
+            "dispo_upload_ordner", tempfile.mkdtemp(prefix="dispo_upload_")
+        )
+    elif ordner:
+        aktuelle_signatur = ordner
+        quelle_ordner = ordner
+    else:
+        aktuelle_signatur = None
+        quelle_ordner = None
+
+    if not quelle_ordner:
+        st.info("Bitte SAP-Exporte hochladen oder (nur lokal) einen Ordner angeben.")
         return
 
     kopf_links, kopf_rechts = st.columns([5, 1])
     with kopf_rechts:
         aktualisieren = st.button("🔄 Aktualisieren", key="dispo_aktualisieren")
 
-    ordner_geaendert = st.session_state.get("dispo_geladener_ordner") != ordner
-    if "dispo_daten" not in st.session_state or ordner_geaendert or aktualisieren:
+    signatur_geaendert = st.session_state.get("dispo_geladene_signatur") != aktuelle_signatur
+    if "dispo_daten" not in st.session_state or signatur_geaendert or aktualisieren:
+        if hochgeladen:
+            for datei in hochgeladen:
+                (Path(quelle_ordner) / datei.name).write_bytes(datei.getvalue())
         with st.spinner("SAP-Exporte werden eingelesen..."):
             try:
-                st.session_state["dispo_daten"] = _lade_und_berechne(ordner)
-                st.session_state["dispo_geladener_ordner"] = ordner
+                st.session_state["dispo_daten"] = _lade_und_berechne(quelle_ordner)
+                st.session_state["dispo_geladene_signatur"] = aktuelle_signatur
             except (ValueError, FileNotFoundError) as exc:
                 st.error(f"Fehler beim Einlesen: {exc}")
                 return
