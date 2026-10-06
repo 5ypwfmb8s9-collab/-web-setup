@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from dispo_dashboard_ui import render_dispo_tab
 from ladeliste_logic import generate_workbook
 from reklamation_logic import STATUS_OPTIONS
 from reklamation_lokal import (
@@ -696,8 +697,10 @@ def render_reklamationen_tab() -> None:
 if not _pruefe_login():
     st.stop()
 
+intro_platzhalter = st.empty()
 if st.session_state.pop("gerade_eingeloggt", False):
-    st.markdown(INTRO_UEBERGANG_HTML, unsafe_allow_html=True)
+    with intro_platzhalter:
+        st.markdown(INTRO_UEBERGANG_HTML, unsafe_allow_html=True)
 
 with st.sidebar:
     st.write(f"Eingeloggt als **{st.session_state['auth_benutzer']}**")
@@ -705,12 +708,15 @@ with st.sidebar:
         del st.session_state["auth_benutzer"]
         st.rerun()
 
-tab_start, tab_ladelisten, tab_reklamationen = st.tabs(
-    ["Start", "Ladelisten", "Reklamationen"]
+tab_start, tab_dispo, tab_ladelisten, tab_reklamationen = st.tabs(
+    ["Start", "Dashboard Dispo", "Ladelisten", "Reklamationen"]
 )
 
 with tab_start:
     render_start_tab()
+
+with tab_dispo:
+    render_dispo_tab()
 
 with tab_ladelisten:
     render_ladelisten_tab()

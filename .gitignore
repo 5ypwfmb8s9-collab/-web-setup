@@ -4,4 +4,5 @@ __pycache__/
 .streamlit/secrets.toml
 .reklamationen_basisordner.txt
 .reklamationen_archivordner.txt
+.dispo_sap_ordner.txt
 start_log.txt
