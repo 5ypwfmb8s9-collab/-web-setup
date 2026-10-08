@@ -5,6 +5,10 @@ berechnete Auswertung an. Die taeglichen SAP-Exporte koennen entweder direkt
 hochgeladen werden (funktioniert ueberall, auch auf Streamlit Cloud) oder -
 nur in der lokal installierten Version - aus einem Ordner (z. B. Netzlaufwerk)
 gelesen werden.
+
+Aufbau: oben eine schlanke Uebersicht (Kennzahlen + ein Hauptdiagramm), die
+Detailansichten (Rückstand, Deckung je Artikel, Abbauplan, Ausgabedatei)
+stecken als eigene Unter-Reiter dahinter. Der Datei-Upload steht ganz unten.
 """
 
 import io
@@ -29,23 +33,25 @@ QUELLEN = [
     ("stockreport", "Stock Report Versender (nur Info)"),
 ]
 
-STATUS_REIHENFOLGE = [
-    "Rückstand ungedeckt",
-    "Rückstand, Zugang kommt",
-    "Rückstand gedeckt",
-    "Engpass",
-    "Zugang zu spät",
-    "Fehlmenge später",
-    "Gedeckt",
-    "Erledigt",
-]
-
 TRANSPORTARTEN = ["Luftfracht", "Minivan", "Express LKW", "LKW"]
 
-POSITIONEN_SPALTEN = [
+# Volle Spaltenliste fuer die Ausgabedatei (Excel-Export).
+POSITIONEN_SPALTEN_EXPORT = [
     "Werk", "Kunde", "Abladestelle", "Norm-Nr", "Kurztext", "Ladedatum",
     "Wunschtermin", "Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge",
     "Gedeckt ab", "Verspätung (Tage)", "Deckender Import", "Versandart", "Status",
+]
+
+# Schlanke Spaltenliste fuer die Positionen-Tabelle innerhalb der
+# Artikel-Detailansicht (Reiter "Rückstand"): kein Werk/Kunde-Wirrwarr aus
+# Bestellmenge/Geliefert/Fehlmenge, nur die offene Menge.
+POSITIONEN_SPALTEN_DETAIL = [
+    "Werk", "Kunde", "Abladestelle", "Ladedatum", "Offene Menge", "Gedeckt ab",
+    "Verspätung (Tage)", "Deckender Import", "Versandart", "Status",
+]
+
+RUECKSTAND_ARTIKEL_SPALTEN = [
+    "Norm-Nr", "Kurztext", "Kunden", "Rückstand (Menge)", "Zugänge unterwegs", "Ampel",
 ]
 
 ARTIKEL_SPALTEN = [
@@ -54,9 +60,9 @@ ARTIKEL_SPALTEN = [
     "Nächster Zugang", "Reichweite (Tage)", "Ampel",
 ]
 
-MENGEN_SPALTEN_POSITIONEN = ["Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge"]
-TAGE_SPALTEN_POSITIONEN = ["Verspätung (Tage)"]
-DATUM_SPALTEN_POSITIONEN = ["Ladedatum", "Wunschtermin", "Gedeckt ab"]
+MENGEN_SPALTEN_EXPORT = ["Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge"]
+TAGE_SPALTEN_EXPORT = ["Verspätung (Tage)"]
+DATUM_SPALTEN_EXPORT = ["Ladedatum", "Wunschtermin", "Gedeckt ab"]
 
 MENGEN_SPALTEN_ARTIKEL = [
     "Bestand verfügbar", "Offene Menge gesamt", "Rückstand (Menge)", "Zugänge unterwegs",
@@ -293,9 +299,9 @@ def _render_legende() -> None:
             "Zugang/Zugang zu spät/Rückstand gedeckt · 🟢 Gedeckt/Erledigt\n"
             "- **Versandart:** Gebietsspediteur = Ware kommt rechtzeitig vor "
             "dem Ladetermin an · Sonderfahrt = Ware kommt erst danach an\n"
-            "- **Abbauplan-Transportart** (nach Tagen bis Ladedatum): "
-            "🔴 Luftfracht ≤2 Tage · 🟡 Minivan 3–5 Tage · 🟡 Express LKW 6–8 Tage "
-            "· 🟢 LKW ab 9 Tage\n"
+            "- **Abbauplan-Transportart** (nach Tagen bis Ladedatum, nur fuer "
+            "aktuellen Rückstand/Engpass): 🔴 Luftfracht ≤2 Tage · 🟡 Minivan "
+            "3–5 Tage · 🟡 Express LKW 6–8 Tage · 🟢 LKW ab 9 Tage\n"
             "- **Eskalation** (Deckungsgrad Rückstand durch Transporte): "
             "🟢 ≥80 % · 🟡 50–79 % · 🔴 <50 %"
         )
@@ -333,11 +339,264 @@ def _render_uebersicht(artikel: pd.DataFrame) -> None:
     )
 
 
-# --- Abbauplan ----------------------------------------------------------------
+def _render_hauptgrafik(artikel: pd.DataFrame) -> None:
+    im_rueckstand = artikel[artikel["Rückstand (Menge)"] > 0].copy()
+    if im_rueckstand.empty:
+        return
+    top = im_rueckstand.nlargest(15, "Rückstand (Menge)").copy()
+    top["Label"] = top["Norm-Nr"].astype(str) + " – " + top["Kurztext"]
+    chart = (
+        alt.Chart(top)
+        .mark_bar()
+        .encode(
+            y=alt.Y("Label:N", sort="-x", title=None),
+            x=alt.X("Rückstand (Menge):Q", title="Rückstand (Menge)"),
+            color=alt.Color(
+                "Ampel:N",
+                scale=alt.Scale(domain=["Rot", "Gelb", "Grün"], range=["#ef4444", "#f59e0b", "#22c55e"]),
+                legend=alt.Legend(title="Ampel"),
+            ),
+            tooltip=[
+                alt.Tooltip("Label:N", title="Artikel"),
+                alt.Tooltip("Rückstand (Menge):Q", title="Rückstand", format=",.0f"),
+                alt.Tooltip("Ampel:N", title="Ampel"),
+            ],
+        )
+        .properties(height=400, title="Top-Artikel nach Rückstand")
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+# --- Reiter: Rückstand (Artikel -> Werke/Kunden -> Hauptdiagramm) ------------
+
+def _verbrauch_pro_woche_fuer(positionen: pd.DataFrame, norm_nr, kunde: str | None = None) -> float:
+    teil = positionen[positionen["Norm-Nr"] == norm_nr]
+    if kunde is not None:
+        teil = teil[teil["Kunde"] == kunde]
+    if teil.empty:
+        return 0.0
+    spanne_tage = max((positionen["Ladedatum"].max() - positionen["Ladedatum"].min()).days, 1)
+    wochen = max(spanne_tage / 7, 1)
+    return teil["Bestellmenge"].sum() / wochen
+
+
+def _render_reichweite_feld(positionen: pd.DataFrame, norm_nr, kunde: str) -> None:
+    schluessel = f"{kunde}|{norm_nr}"
+    notizen = st.session_state.setdefault("dispo_reichweite", lade_reichweite_notizen())
+    gespeichert = notizen.get(schluessel, {})
+    verbrauch = _verbrauch_pro_woche_fuer(positionen, norm_nr, kunde)
+
+    st.markdown("**Reichweite beim Kunden**")
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        st.metric("Verbrauch (Stk/Woche, berechnet)", _fmt_menge(verbrauch))
+    with r2:
+        bestand = st.number_input(
+            "Bestand beim Kunden", min_value=0.0,
+            value=float(gespeichert.get("bestand", 0.0)),
+            key=f"dispo_reichweite_bestand_{schluessel}",
+        )
+    with r3:
+        reichweite = (bestand / verbrauch) if verbrauch > 0 and bestand > 0 else None
+        st.metric("Reichweite (Wochen)", _fmt_tage(reichweite) if reichweite is not None else "–")
+
+    notiz = st.text_input(
+        "Notiz", value=gespeichert.get("notiz", ""), key=f"dispo_reichweite_notiz_{schluessel}",
+    )
+    if st.button("Reichweite speichern", key=f"dispo_reichweite_speichern_{schluessel}"):
+        notizen[schluessel] = {"bestand": float(bestand), "notiz": notiz}
+        speichere_reichweite_notizen(notizen)
+        st.session_state["dispo_reichweite"] = notizen
+        st.success("Gespeichert.")
+
+
+def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None:
+    st.caption(
+        "Jeder Artikel erscheint einmal. Zeile anklicken (Kaestchen links), "
+        "um Werke/Kunden, Hauptdiagramm und Details zu sehen."
+    )
+    rueckstand_artikel = artikel[artikel["Rückstand (Menge)"] > 0]
+    if rueckstand_artikel.empty:
+        st.success("Kein Rückstand - alles im grünen Bereich.")
+        return
+
+    anzeige = rueckstand_artikel[RUECKSTAND_ARTIKEL_SPALTEN].copy()
+    anzeige["Rückstand (Menge)"] = anzeige["Rückstand (Menge)"].apply(_fmt_menge)
+    anzeige["Zugänge unterwegs"] = anzeige["Zugänge unterwegs"].apply(_fmt_menge)
+    auswahl = st.dataframe(
+        anzeige.style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="dispo_rueckstand_artikel_tabelle",
+    )
+    zeilen = auswahl.selection.rows if auswahl else []
+    if not zeilen:
+        return
+
+    gewaehlt = rueckstand_artikel.iloc[zeilen[0]]
+    norm_nr = gewaehlt["Norm-Nr"]
+    positionen_artikel = positionen[positionen["Norm-Nr"] == norm_nr]
+
+    st.divider()
+    st.markdown(f"### {norm_nr} – {gewaehlt['Kurztext']}")
+
+    kunden_liste = sorted(positionen_artikel["Kunde"].dropna().unique())
+    kunde_auswahl = st.selectbox(
+        "Kunde (für Hauptdiagramm und Details)",
+        ["(Alle Kunden)"] + kunden_liste,
+        key=f"dispo_kunde_auswahl_{norm_nr}",
+    )
+
+    if kunde_auswahl == "(Alle Kunden)":
+        kundenbedarf = gewaehlt["Offene Menge gesamt"]
+        positionen_gefiltert = positionen_artikel
+    else:
+        positionen_gefiltert = positionen_artikel[positionen_artikel["Kunde"] == kunde_auswahl]
+        kundenbedarf = positionen_gefiltert["Offene Menge"].sum()
+
+    hauptdiagramm = pd.DataFrame({
+        "Kategorie": ["Kundenbedarf", "Importmenge", "Lagerbestand"],
+        "Menge": [kundenbedarf, gewaehlt["Zugänge unterwegs"], gewaehlt["Bestand verfügbar"]],
+    })
+    chart = (
+        alt.Chart(hauptdiagramm)
+        .mark_bar()
+        .encode(
+            x=alt.X("Kategorie:N", title=None, sort=None),
+            y=alt.Y("Menge:Q", title="Menge"),
+            color=alt.Color(
+                "Kategorie:N",
+                scale=alt.Scale(
+                    domain=["Kundenbedarf", "Importmenge", "Lagerbestand"],
+                    range=["#EC4899", "#3B82F6", "#22c55e"],
+                ),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("Kategorie:N", title="Kategorie"),
+                alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
+            ],
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+    if kunde_auswahl != "(Alle Kunden)":
+        _render_reichweite_feld(positionen, norm_nr, kunde_auswahl)
+
+    st.markdown("**Werke / Positionen**")
+    _zeige_tabelle(
+        positionen_gefiltert, POSITIONEN_SPALTEN_DETAIL,
+        menge_spalten=["Offene Menge"],
+        tage_spalten=["Verspätung (Tage)"],
+        datum_spalten=["Ladedatum", "Gedeckt ab"],
+        farben={"Status": _STATUS_FARBEN, "Versandart": _VERSANDART_FARBEN},
+    )
+
+
+# --- Reiter: Deckung je Artikel (Chart + Kontakt-E-Mail je Artikel) ----------
+
+def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None:
+    st.caption("Zeile anklicken (Kaestchen links), um Reichweite-Grafik und Kontakt-E-Mail zu sehen.")
+    deckung = _filter_auswahl(artikel, "Ampel", "Ampel", "deckung")
+    anzeige_deckung = deckung[ARTIKEL_SPALTEN].copy()
+    for s in MENGEN_SPALTEN_ARTIKEL:
+        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_menge)
+    for s in TAGE_SPALTEN_ARTIKEL:
+        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_tage)
+    for s in DATUM_SPALTEN_ARTIKEL:
+        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_datum)
+    auswahl_ereignis = st.dataframe(
+        anzeige_deckung.style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="dispo_artikel_tabelle",
+    )
+
+    ausgewaehlte_zeilen = auswahl_ereignis.selection.rows if auswahl_ereignis else []
+    if not ausgewaehlte_zeilen:
+        return
+
+    gewaehlt = deckung.iloc[ausgewaehlte_zeilen[0]]
+    norm_nr = gewaehlt["Norm-Nr"]
+    norm_nr_key = str(norm_nr)
+
+    st.markdown(f"**Reichweite: {norm_nr} – {gewaehlt['Kurztext']}**")
+    grafik_spalte, mail_spalte = st.columns([2, 1])
+
+    with grafik_spalte:
+        artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr].sort_values("Ladedatum")
+        if artikel_positionen.empty:
+            st.info("Keine Positionen fuer diesen Artikel gefunden.")
+        else:
+            verlauf = pd.concat([
+                pd.DataFrame({
+                    "Ladedatum": artikel_positionen["Ladedatum"],
+                    "Menge": artikel_positionen["Bestand verfügbar"]
+                    + artikel_positionen["Zugang bis Ladedatum"],
+                    "Reihe": "Verfügbare Deckung",
+                }),
+                pd.DataFrame({
+                    "Ladedatum": artikel_positionen["Ladedatum"],
+                    "Menge": artikel_positionen["Kum. Bedarf Artikel"],
+                    "Reihe": "Kumulierter Bedarf",
+                }),
+            ])
+            chart = (
+                alt.Chart(verlauf)
+                .mark_line(point=True, strokeWidth=2.5)
+                .encode(
+                    x=alt.X("Ladedatum:T", title="Ladedatum"),
+                    y=alt.Y("Menge:Q", title="Menge"),
+                    color=alt.Color(
+                        "Reihe:N",
+                        scale=alt.Scale(
+                            domain=["Verfügbare Deckung", "Kumulierter Bedarf"],
+                            range=["#3B82F6", "#EC4899"],
+                        ),
+                        legend=alt.Legend(title=None),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Ladedatum:T", title="Ladedatum"),
+                        alt.Tooltip("Reihe:N", title="Reihe"),
+                        alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
+                    ],
+                )
+                .properties(height=320)
+            )
+            st.altair_chart(chart, use_container_width=True)
+
+    with mail_spalte:
+        kontakte = st.session_state.setdefault("dispo_kontakte", lade_kontakte())
+        neue_mail = st.text_input(
+            "E-Mail Ansprechpartner",
+            value=kontakte.get(norm_nr_key, ""),
+            key=f"dispo_mail_{norm_nr_key}",
+        )
+        if st.button("E-Mail speichern", key=f"dispo_mail_speichern_{norm_nr_key}"):
+            kontakte[norm_nr_key] = neue_mail
+            speichere_kontakte(kontakte)
+            st.session_state["dispo_kontakte"] = kontakte
+            st.success("Gespeichert.")
+
+
+# --- Reiter: Abbauplan -------------------------------------------------------
 
 def _abbauplan(positionen: pd.DataFrame) -> pd.DataFrame:
-    offen = positionen[positionen["Fehlmenge"] > 0]
-    pivot = offen.pivot_table(
+    # Nur der AKTUELLE Rückstand/Engpass, nicht die komplette (teils >1 Jahr
+    # entfernte) Fehlmengen-Vorschau - sonst landet praktisch alles in "LKW"
+    # und der Plan ist nutzlos.
+    akut = positionen[
+        (positionen["Fehlmenge"] > 0)
+        & (positionen["Status"].str.startswith("Rückstand") | (positionen["Status"] == "Engpass"))
+    ]
+    if akut.empty:
+        return akut
+    pivot = akut.pivot_table(
         index=["Norm-Nr", "Kurztext"],
         columns="Transportart",
         values="Fehlmenge",
@@ -352,16 +611,16 @@ def _abbauplan(positionen: pd.DataFrame) -> pd.DataFrame:
     return pivot.reset_index().sort_values("Gesamt offen", ascending=False)
 
 
-def _render_abbauplan(positionen: pd.DataFrame) -> None:
-    st.subheader("Abbauplan")
+def _render_abbauplan_tab(positionen: pd.DataFrame) -> None:
     st.caption(
-        "Je Artikel, welche offene Menge mit welcher Transportart noch "
-        "aufgeholt werden kann (nach Tagen bis Ladedatum: ≤2 Luftfracht, "
+        "Nur aktueller Rückstand/Engpass (nicht die komplette Fehlmengen-"
+        "Vorschau). Je Artikel, welche offene Menge mit welcher Transportart "
+        "noch aufgeholt werden kann (nach Tagen bis Ladedatum: ≤2 Luftfracht, "
         "3–5 Minivan, 6–8 Express LKW, ab 9 LKW)."
     )
     plan = _abbauplan(positionen)
     if plan.empty:
-        st.success("Kein offener Rückstand - kein Abbauplan noetig.")
+        st.success("Kein aktueller Rückstand/Engpass - kein Abbauplan noetig.")
         return
 
     formate = {s: _fmt_menge for s in TRANSPORTARTEN + ["Gesamt offen"]}
@@ -371,106 +630,27 @@ def _render_abbauplan(positionen: pd.DataFrame) -> None:
     st.dataframe(styler, hide_index=True, use_container_width=True)
 
 
-# --- Reichweite beim Kunden (dynamisch) ---------------------------------------
-
-def _verbrauch_pro_woche(positionen: pd.DataFrame) -> pd.DataFrame:
-    rueckstand_positionen = positionen[positionen["Status"].str.startswith("Rückstand")]
-    if rueckstand_positionen.empty:
-        return rueckstand_positionen[["Kunde", "Norm-Nr", "Kurztext"]].assign(**{"Verbrauch (Stk/Woche)": []})
-
-    spanne_tage = max((positionen["Ladedatum"].max() - positionen["Ladedatum"].min()).days, 1)
-    wochen = max(spanne_tage / 7, 1)
-    gruppe = (
-        positionen.groupby(["Kunde", "Norm-Nr", "Kurztext"])["Bestellmenge"]
-        .sum()
-        .reset_index()
-    )
-    gruppe["Verbrauch (Stk/Woche)"] = gruppe["Bestellmenge"] / wochen
-
-    relevante_kombis = set(zip(rueckstand_positionen["Kunde"], rueckstand_positionen["Norm-Nr"]))
-    gruppe = gruppe[gruppe.apply(lambda z: (z["Kunde"], z["Norm-Nr"]) in relevante_kombis, axis=1)]
-    return gruppe.drop(columns="Bestellmenge")
-
-
-def _render_reichweite_tabelle(positionen: pd.DataFrame) -> None:
-    st.subheader("Reichweite beim Kunden")
-    st.caption(
-        "Verbrauch wird aus den eingespielten Bestellungen berechnet (nur "
-        "Artikel/Kunden aktuell im Rückstand). Bestand beim Kunden und Notiz "
-        "bitte selbst eintragen - die Reichweite wird automatisch daraus "
-        "berechnet und gespeichert."
-    )
-    basis = _verbrauch_pro_woche(positionen)
-    if basis.empty:
-        st.success("Kein offener Rückstand - keine Reichweiten-Pflege noetig.")
-        return
-
-    notizen = st.session_state.setdefault("dispo_reichweite", lade_reichweite_notizen())
-
-    zeilen = []
-    for _, zeile in basis.iterrows():
-        schluessel = f"{zeile['Kunde']}|{zeile['Norm-Nr']}"
-        gespeichert = notizen.get(schluessel, {})
-        zeilen.append({
-            "Kunde": zeile["Kunde"],
-            "Norm-Nr": zeile["Norm-Nr"],
-            "Kurztext": zeile["Kurztext"],
-            "Verbrauch (Stk/Woche)": round(zeile["Verbrauch (Stk/Woche)"], 1),
-            "Bestand beim Kunden": float(gespeichert.get("bestand", 0.0)),
-            "Notiz": gespeichert.get("notiz", ""),
-        })
-    anzeige = pd.DataFrame(zeilen)
-    anzeige["Reichweite (Wochen)"] = anzeige.apply(
-        lambda z: round(z["Bestand beim Kunden"] / z["Verbrauch (Stk/Woche)"], 1)
-        if z["Verbrauch (Stk/Woche)"] > 0 and z["Bestand beim Kunden"] > 0 else None,
-        axis=1,
-    )
-
-    bearbeitet = st.data_editor(
-        anzeige,
-        hide_index=True,
-        use_container_width=True,
-        key="dispo_reichweite_editor",
-        disabled=["Kunde", "Norm-Nr", "Kurztext", "Verbrauch (Stk/Woche)", "Reichweite (Wochen)"],
-    )
-
-    if st.button("Reichweite-Angaben speichern", key="dispo_reichweite_speichern"):
-        neue_notizen = dict(notizen)
-        for _, zeile in bearbeitet.iterrows():
-            schluessel = f"{zeile['Kunde']}|{zeile['Norm-Nr']}"
-            bestand = zeile["Bestand beim Kunden"]
-            neue_notizen[schluessel] = {
-                "bestand": float(bestand) if pd.notna(bestand) else 0.0,
-                "notiz": zeile["Notiz"] or "",
-            }
-        speichere_reichweite_notizen(neue_notizen)
-        st.session_state["dispo_reichweite"] = neue_notizen
-        st.success("Gespeichert.")
-
-
-# --- Ausgabedatei (Deutsch/Tuerkisch) -----------------------------------------
+# --- Reiter: Ausgabedatei (Deutsch/Tuerkisch) --------------------------------
 
 def _export_uebersetzen(df: pd.DataFrame, sprache: str) -> pd.DataFrame:
     export = df.copy()
-    if "Status" in export.columns:
-        export["Status"] = export["Status"].map(STATUS_TR) if sprache == "Türkçe" else export["Status"]
-    if "Versandart" in export.columns:
-        export["Versandart"] = (
-            export["Versandart"].map(VERSANDART_TR).fillna("") if sprache == "Türkçe" else export["Versandart"]
-        )
+    if "Status" in export.columns and sprache == "Türkçe":
+        export["Status"] = export["Status"].map(STATUS_TR).fillna(export["Status"])
+    if "Versandart" in export.columns and sprache == "Türkçe":
+        export["Versandart"] = export["Versandart"].map(VERSANDART_TR).fillna(export["Versandart"])
     if sprache == "Türkçe":
         export = export.rename(columns=UEBERSETZUNG_TR)
     return export
 
 
-def _render_export(positionen: pd.DataFrame) -> None:
-    st.subheader("Ausgabedatei")
+def _render_export_tab(positionen: pd.DataFrame) -> None:
+    st.caption("Vollstaendige Positionsliste (inkl. Bestellmenge/Geliefert) als Excel-Datei.")
     sprache = st.radio(
         "Sprache", ["Deutsch", "Türkçe"], horizontal=True, key="dispo_export_sprache"
     )
 
-    export_df = positionen[POSITIONEN_SPALTEN].copy()
-    for spalte in DATUM_SPALTEN_POSITIONEN:
+    export_df = positionen[POSITIONEN_SPALTEN_EXPORT].copy()
+    for spalte in DATUM_SPALTEN_EXPORT:
         export_df[spalte] = export_df[spalte].apply(_fmt_datum)
     export_df = _export_uebersetzen(export_df, sprache)
 
@@ -487,15 +667,10 @@ def _render_export(positionen: pd.DataFrame) -> None:
     )
 
 
-def render_dispo_tab() -> None:
-    st.title("Dashboard Dispo")
-    st.markdown(
-        '<span class="vwai-badge">✨ Dispositions-Übersicht</span>',
-        unsafe_allow_html=True,
-    )
+# --- Datenquelle (Upload / Ordner) -------------------------------------------
 
-    _render_legende()
-
+def _render_datenquelle() -> None:
+    st.subheader("Daten aktualisieren")
     hochgeladen = st.file_uploader(
         "SAP-Exporte hochladen (Bedarf, Bestand, Zugänge, optional Stock Report)",
         type=["xlsx"],
@@ -526,13 +701,12 @@ def render_dispo_tab() -> None:
         aktuelle_signatur = None
         quelle_ordner = None
 
-    if not quelle_ordner:
-        st.info("Bitte SAP-Exporte hochladen oder (nur lokal) einen Ordner angeben.")
-        return
+    aktualisieren = st.button("🔄 Aktualisieren", key="dispo_aktualisieren")
 
-    kopf_links, kopf_rechts = st.columns([5, 1])
-    with kopf_rechts:
-        aktualisieren = st.button("🔄 Aktualisieren", key="dispo_aktualisieren")
+    if not quelle_ordner:
+        if not st.session_state.get("dispo_daten"):
+            st.info("Bitte Dateien hochladen oder (nur lokal) einen Ordner angeben.")
+        return
 
     signatur_geaendert = st.session_state.get("dispo_geladene_signatur") != aktuelle_signatur
     if "dispo_daten" not in st.session_state or signatur_geaendert or aktualisieren:
@@ -546,170 +720,57 @@ def render_dispo_tab() -> None:
             except (ValueError, FileNotFoundError) as exc:
                 st.error(f"Fehler beim Einlesen: {exc}")
                 return
+        st.rerun()
 
-    daten = st.session_state["dispo_daten"]
-    stichtag = daten["stichtag"]
-    positionen = daten["positionen"]
-    artikel = daten["artikel"]
 
-    with kopf_links:
-        st.caption(f"Stichtag: {stichtag:%d.%m.%Y}")
-
-    _render_uebersicht(artikel)
-
-    st.divider()
-
-    # --- Datenstand je Quelle -------------------------------------------------
-    datenstand_zeilen = []
-    for label, datum, name in daten["datenstand"]:
-        veraltet = (stichtag - datum).days >= config.QUELLE_VERALTET_TAGE
-        datenstand_zeilen.append({
-            "Quelle": label,
-            "Datenstand": datum.strftime("%d.%m.%Y") + (" ⚠️ veraltet" if veraltet else ""),
-            "Datei": name,
-        })
-    st.dataframe(pd.DataFrame(datenstand_zeilen), hide_index=True, use_container_width=True)
-
-    # --- Kennzahlen -------------------------------------------------------
-    status_counts = positionen["Status"].value_counts()
-    ampel_counts = artikel["Ampel"].value_counts()
-
-    status_cols = st.columns(len(STATUS_REIHENFOLGE))
-    for col, status in zip(status_cols, STATUS_REIHENFOLGE):
-        col.metric(status, int(status_counts.get(status, 0)))
-
-    ampel_cols = st.columns(3)
-    for col, ampel in zip(ampel_cols, ["Rot", "Gelb", "Grün"]):
-        col.metric(f"Ampel {ampel}", int(ampel_counts.get(ampel, 0)))
-
-    st.divider()
-
-    # --- Rückstand (nach Artikel sortiert, mit deckendem Import) --------------
-    st.subheader("Rückstand")
-    st.caption("Nach Ladedatum sortiert, mit der Referenznummer des deckenden Imports und der Versandart.")
-    rueckstand = positionen[positionen["Status"].str.startswith("Rückstand")]
-    f1, f2 = st.columns(2)
-    with f1:
-        rueckstand = _filter_auswahl(rueckstand, "Werk", "Werk", "rueckstand")
-    with f2:
-        rueckstand = _filter_auswahl(rueckstand, "Kunde", "Kunde", "rueckstand")
-    _zeige_tabelle(
-        rueckstand, POSITIONEN_SPALTEN,
-        menge_spalten=MENGEN_SPALTEN_POSITIONEN,
-        tage_spalten=TAGE_SPALTEN_POSITIONEN,
-        datum_spalten=DATUM_SPALTEN_POSITIONEN,
-        farben={"Status": _STATUS_FARBEN, "Versandart": _VERSANDART_FARBEN},
+def render_dispo_tab() -> None:
+    st.title("Dashboard Dispo")
+    st.markdown(
+        '<span class="vwai-badge">✨ Dispositions-Übersicht</span>',
+        unsafe_allow_html=True,
     )
 
-    # --- Deckung je Artikel --------------------------------------------------
-    st.subheader("Deckung je Artikel")
-    st.caption("Zeile anklicken (Kaestchen links), um Reichweite-Grafik und Kontakt-E-Mail zu sehen.")
-    deckung = _filter_auswahl(artikel, "Ampel", "Ampel", "deckung")
-    anzeige_deckung = deckung[ARTIKEL_SPALTEN].copy()
-    for s in MENGEN_SPALTEN_ARTIKEL:
-        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_menge)
-    for s in TAGE_SPALTEN_ARTIKEL:
-        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_tage)
-    for s in DATUM_SPALTEN_ARTIKEL:
-        anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_datum)
-    auswahl_ereignis = st.dataframe(
-        anzeige_deckung.style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="dispo_artikel_tabelle",
-    )
+    _render_legende()
 
-    ausgewaehlte_zeilen = auswahl_ereignis.selection.rows if auswahl_ereignis else []
-    if ausgewaehlte_zeilen:
-        gewaehlt = deckung.iloc[ausgewaehlte_zeilen[0]]
-        norm_nr = gewaehlt["Norm-Nr"]
-        norm_nr_key = str(norm_nr)
+    # Stabiler Platzhalter: IMMER genau einmal aufgerufen (ob mit oder ohne
+    # Daten), damit die Position der nachfolgenden Elemente (insbesondere der
+    # Upload-Widgets ganz unten) sich zwischen Laeufen nie verschiebt - eine
+    # Verschiebung davor hat frueher den Auswahlzustand von st.tabs() zerstoert.
+    inhalt_platzhalter = st.container()
 
-        st.markdown(f"**Reichweite: {norm_nr} – {gewaehlt['Kurztext']}**")
-        grafik_spalte, mail_spalte = st.columns([2, 1])
+    with inhalt_platzhalter:
+        daten = st.session_state.get("dispo_daten")
+        if daten:
+            positionen = daten["positionen"]
+            artikel = daten["artikel"]
+            stichtag = daten["stichtag"]
 
-        with grafik_spalte:
-            artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr].sort_values("Ladedatum")
-            if artikel_positionen.empty:
-                st.info("Keine Positionen fuer diesen Artikel gefunden.")
-            else:
-                verlauf = pd.concat([
-                    pd.DataFrame({
-                        "Ladedatum": artikel_positionen["Ladedatum"],
-                        "Menge": artikel_positionen["Bestand verfügbar"]
-                        + artikel_positionen["Zugang bis Ladedatum"],
-                        "Reihe": "Verfügbare Deckung",
-                    }),
-                    pd.DataFrame({
-                        "Ladedatum": artikel_positionen["Ladedatum"],
-                        "Menge": artikel_positionen["Kum. Bedarf Artikel"],
-                        "Reihe": "Kumulierter Bedarf",
-                    }),
-                ])
-                chart = (
-                    alt.Chart(verlauf)
-                    .mark_line(point=True, strokeWidth=2.5)
-                    .encode(
-                        x=alt.X("Ladedatum:T", title="Ladedatum"),
-                        y=alt.Y("Menge:Q", title="Menge"),
-                        color=alt.Color(
-                            "Reihe:N",
-                            scale=alt.Scale(
-                                domain=["Verfügbare Deckung", "Kumulierter Bedarf"],
-                                range=["#3B82F6", "#EC4899"],
-                            ),
-                            legend=alt.Legend(title=None),
-                        ),
-                        tooltip=[
-                            alt.Tooltip("Ladedatum:T", title="Ladedatum"),
-                            alt.Tooltip("Reihe:N", title="Reihe"),
-                            alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
-                        ],
-                    )
-                    .properties(height=320)
-                )
-                st.altair_chart(chart, use_container_width=True)
+            st.caption(f"Stichtag: {stichtag:%d.%m.%Y}")
 
-        with mail_spalte:
-            kontakte = st.session_state.setdefault("dispo_kontakte", lade_kontakte())
-            neue_mail = st.text_input(
-                "E-Mail Ansprechpartner",
-                value=kontakte.get(norm_nr_key, ""),
-                key=f"dispo_mail_{norm_nr_key}",
+            warnung_platz = st.empty()
+            veraltete_quellen = [
+                label for label, datum, _ in daten["datenstand"]
+                if (stichtag - datum).days >= config.QUELLE_VERALTET_TAGE
+            ]
+            if veraltete_quellen:
+                warnung_platz.warning("⚠️ Veraltete Daten: " + ", ".join(veraltete_quellen))
+
+            _render_uebersicht(artikel)
+            _render_hauptgrafik(artikel)
+
+            reiter_rueckstand, reiter_deckung, reiter_abbau, reiter_export = st.tabs(
+                ["Rückstand", "Deckung je Artikel", "Abbauplan", "Ausgabedatei"]
             )
-            if st.button("E-Mail speichern", key=f"dispo_mail_speichern_{norm_nr_key}"):
-                kontakte[norm_nr_key] = neue_mail
-                speichere_kontakte(kontakte)
-                st.session_state["dispo_kontakte"] = kontakte
-                st.success("Gespeichert.")
+            with reiter_rueckstand:
+                _render_rueckstand_tab(positionen, artikel)
+            with reiter_deckung:
+                _render_deckung_tab(positionen, artikel)
+            with reiter_abbau:
+                _render_abbauplan_tab(positionen)
+            with reiter_export:
+                _render_export_tab(positionen)
+        else:
+            st.info("Bitte unten SAP-Exporte hochladen, um das Dashboard zu sehen.")
 
     st.divider()
-    _render_abbauplan(positionen)
-
-    st.divider()
-    _render_reichweite_tabelle(positionen)
-
-    st.divider()
-
-    # --- Positionen -----------------------------------------------------------
-    st.subheader("Positionen")
-    p1, p2, p3 = st.columns(3)
-    pos_gefiltert = positionen
-    with p1:
-        pos_gefiltert = _filter_auswahl(pos_gefiltert, "Werk", "Werk", "positionen")
-    with p2:
-        pos_gefiltert = _filter_auswahl(pos_gefiltert, "Kunde", "Kunde", "positionen")
-    with p3:
-        pos_gefiltert = _filter_auswahl(pos_gefiltert, "Status", "Status", "positionen")
-    _zeige_tabelle(
-        pos_gefiltert, POSITIONEN_SPALTEN,
-        menge_spalten=MENGEN_SPALTEN_POSITIONEN,
-        tage_spalten=TAGE_SPALTEN_POSITIONEN,
-        datum_spalten=DATUM_SPALTEN_POSITIONEN,
-        farben={"Status": _STATUS_FARBEN, "Versandart": _VERSANDART_FARBEN},
-    )
-
-    st.divider()
-    _render_export(positionen)
+    _render_datenquelle()
