@@ -26,6 +26,7 @@ from dispo_dashboard import config, loaders, logic
 ORDNER_DATEI = ".dispo_sap_ordner.txt"
 KONTAKTE_DATEI = ".dispo_kontakte.json"
 REICHWEITE_DATEI = ".dispo_reichweite.json"
+ARTIKELLISTE_DATEI = Path(__file__).resolve().parent / "dispo_dashboard" / "artikelliste.xlsx"
 
 QUELLEN = [
     ("bedarf", "Bedarf (Lieferplan-Einteilungen)"),
@@ -133,14 +134,31 @@ def _dringlichkeit_position(status: str) -> str:
     return _DRINGLICHKEIT_NACH_STATUS.get(status, "Unkritisch")
 
 
-# VW-Nr (Volkswagen-Teilenummer, z. B. "N91096801") steckt - wenn vorhanden -
-# als Text im Kurztext (Artikelbezeichnung des Kunden), zusammen mit den
-# Schraubenabmessungen. Fuer die Anzeige wird nur die VW-Nr herausgezogen;
-# ist keine enthalten, bleibt das Feld leer (nicht jeder Artikel hat eine).
+# VW-Nr (Volkswagen-Teilenummer, z. B. "N91096801" oder "WHT007527"): zuerst
+# in der gepflegten Artikelliste (dispo_dashboard/artikelliste.xlsx, Norm-Nr
+# -> VW-Nr) nachschlagen. Steht ein Artikel dort nicht drin, ersatzweise im
+# Kurztext (Artikelbezeichnung des Kunden) nach einem eingebetteten "N" +
+# 8 Ziffern suchen. Ist beides erfolglos, bleibt das Feld leer - nicht jeder
+# Artikel hat eine erfasste VW-Nr.
 _VW_NR_MUSTER = re.compile(r"\bN\d{8}\b")
 
 
-def _vw_nr(kurztext) -> str:
+def _lade_artikelliste() -> dict:
+    try:
+        liste = pd.read_excel(ARTIKELLISTE_DATEI)
+    except FileNotFoundError:
+        return {}
+    liste = liste.drop_duplicates(subset="NormNr", keep="first")
+    return dict(zip(liste["NormNr"], liste["VWNR"]))
+
+
+_ARTIKELLISTE_VW_NR = _lade_artikelliste()
+
+
+def _vw_nr(norm_nr, kurztext) -> str:
+    aus_liste = _ARTIKELLISTE_VW_NR.get(norm_nr)
+    if aus_liste:
+        return str(aus_liste)
     treffer = _VW_NR_MUSTER.search(str(kurztext))
     return treffer.group(0) if treffer else ""
 
@@ -276,11 +294,11 @@ def _lade_und_berechne(ordner: str) -> dict:
     positionen["Versandart"] = positionen.apply(_versandart, axis=1)
     positionen["Transportart"] = positionen["Tage bis Ladedatum"].apply(_transportart)
     positionen["Dringlichkeit"] = positionen["Status"].apply(_dringlichkeit_position)
-    positionen["VW-Nr"] = positionen["Kurztext"].apply(_vw_nr)
+    positionen["VW-Nr"] = positionen.apply(lambda r: _vw_nr(r["Norm-Nr"], r["Kurztext"]), axis=1)
 
     artikel = artikel.copy()
     artikel["Dringlichkeit"] = artikel["Ampel"].map(_DRINGLICHKEIT_TEXT)
-    artikel["VW-Nr"] = artikel["Kurztext"].apply(_vw_nr)
+    artikel["VW-Nr"] = artikel.apply(lambda r: _vw_nr(r["Norm-Nr"], r["Kurztext"]), axis=1)
 
     datenstand = [
         (label, loaders.datum_der_datei(dateien[t][0], stichtag), Path(dateien[t][0]).name)
