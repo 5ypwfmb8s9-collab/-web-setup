@@ -35,11 +35,14 @@ QUELLEN = [
 
 TRANSPORTARTEN = ["Luftfracht", "Minivan", "Express LKW", "LKW"]
 
-# Volle Spaltenliste fuer die Ausgabedatei (Excel-Export).
+# Volle Spaltenliste fuer die Ausgabedatei (Excel-Export). Sortiert nach
+# Dringlichkeit (siehe _dringlichkeit_sortierung) - oben steht, was am
+# dringendsten gebraucht wird.
 POSITIONEN_SPALTEN_EXPORT = [
     "Werk", "Kunde", "Abladestelle", "Norm-Nr", "Kurztext", "Ladedatum",
     "Wunschtermin", "Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge",
-    "Gedeckt ab", "Verspätung (Tage)", "Deckender Import", "Versandart", "Status",
+    "Gedeckt ab", "Verspätung (Tage)", "Deckender Import", "Versandart",
+    "Transportart", "Status", "Dringlichkeit",
 ]
 
 # Schlanke Spaltenliste fuer die Positionen-Tabelle innerhalb der
@@ -51,13 +54,18 @@ POSITIONEN_SPALTEN_DETAIL = [
 ]
 
 RUECKSTAND_ARTIKEL_SPALTEN = [
-    "Norm-Nr", "Kurztext", "Kunden", "Rückstand (Menge)", "Zugänge unterwegs", "Ampel",
+    "Norm-Nr", "Kurztext", "Kunden", "Rückstand (Menge)", "Zugänge unterwegs", "Dringlichkeit",
 ]
 
 ARTIKEL_SPALTEN = [
     "Norm-Nr", "Kurztext", "Kunden", "Bestand verfügbar", "Offene Menge gesamt",
     "Rückstand (Menge)", "Erste Fehlmenge am", "Zugänge unterwegs",
-    "Nächster Zugang", "Reichweite (Tage)", "Ampel",
+    "Nächster Zugang", "Reichweite (Tage)", "Dringlichkeit",
+]
+
+LANGFRIST_SPALTEN = [
+    "Norm-Nr", "Kurztext", "Bestand verfügbar", "Zugänge unterwegs",
+    "Reichweite (Tage)", "Nächster Zugang", "Empfohlene Bestellmenge", "Dringlichkeit",
 ]
 
 MENGEN_SPALTEN_EXPORT = ["Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge"]
@@ -70,7 +78,6 @@ MENGEN_SPALTEN_ARTIKEL = [
 TAGE_SPALTEN_ARTIKEL = ["Reichweite (Tage)"]
 DATUM_SPALTEN_ARTIKEL = ["Erste Fehlmenge am", "Nächster Zugang"]
 
-_AMPEL_FARBEN = {"Rot": "#ef4444", "Gelb": "#f59e0b", "Grün": "#22c55e"}
 _STATUS_FARBEN = {
     "Rückstand ungedeckt": "#ef4444",
     "Engpass": "#ef4444",
@@ -88,6 +95,42 @@ _TRANSPORTART_FARBEN = {
     "LKW": "#22c55e",
 }
 
+# "Ampel" (Rot/Gelb/Grün) aus logic.py ist fuer die Oberflaeche unanschaulich -
+# hier auf ein verstaendliches Wort je Dringlichkeitsstufe abgebildet. Die
+# Farben bleiben dieselben Signalfarben wie bisher.
+_DRINGLICHKEIT_TEXT = {"Rot": "Kritisch", "Gelb": "Bald fällig", "Grün": "Unkritisch"}
+_DRINGLICHKEIT_FARBEN = {"Kritisch": "#ef4444", "Bald fällig": "#f59e0b", "Unkritisch": "#22c55e"}
+
+# Dringlichkeit je POSITION (nicht je Artikel) - selbe drei Stufen, aus dem
+# Status abgeleitet. Fuer die Ausgabedatei, damit auch ohne Status-Fachwissen
+# klar ist, was dringend gebraucht wird.
+_DRINGLICHKEIT_NACH_STATUS = {
+    "Rückstand ungedeckt": "Kritisch",
+    "Engpass": "Kritisch",
+    "Rückstand, Zugang kommt": "Bald fällig",
+    "Zugang zu spät": "Bald fällig",
+    "Rückstand gedeckt": "Bald fällig",
+    "Fehlmenge später": "Unkritisch",
+    "Gedeckt": "Unkritisch",
+    "Erledigt": "Unkritisch",
+}
+
+# Sortierreihenfolge fuer die Ausgabedatei: am dringendsten zuerst.
+_STATUS_PRIORITAET = {
+    "Rückstand ungedeckt": 0,
+    "Engpass": 1,
+    "Rückstand, Zugang kommt": 2,
+    "Zugang zu spät": 3,
+    "Rückstand gedeckt": 4,
+    "Fehlmenge später": 5,
+    "Gedeckt": 6,
+    "Erledigt": 7,
+}
+
+
+def _dringlichkeit_position(status: str) -> str:
+    return _DRINGLICHKEIT_NACH_STATUS.get(status, "Unkritisch")
+
 # --- Uebersetzung fuer die Ausgabedatei --------------------------------------
 UEBERSETZUNG_TR = {
     "Werk": "Tesis", "Kunde": "Müşteri", "Abladestelle": "Boşaltma Yeri",
@@ -96,7 +139,8 @@ UEBERSETZUNG_TR = {
     "Geliefert": "Teslim Edilen", "Offene Menge": "Açık Miktar",
     "Fehlmenge": "Eksik Miktar", "Gedeckt ab": "Karşılanma Tarihi",
     "Verspätung (Tage)": "Gecikme (Gün)", "Deckender Import": "Karşılayan İthalat",
-    "Versandart": "Sevkiyat Türü", "Status": "Durum",
+    "Versandart": "Sevkiyat Türü", "Transportart": "Taşıma Türü", "Status": "Durum",
+    "Dringlichkeit": "Aciliyet",
 }
 STATUS_TR = {
     "Rückstand ungedeckt": "Karşılanmamış Gecikme",
@@ -109,6 +153,11 @@ STATUS_TR = {
     "Erledigt": "Tamamlandı",
 }
 VERSANDART_TR = {"Gebietsspediteur": "Bölge Nakliyecisi", "Sonderfahrt": "Özel Sefer"}
+TRANSPORTART_TR = {
+    "Luftfracht": "Hava Kargo", "Minivan": "Minivan",
+    "Express LKW": "Ekspres Kamyon", "LKW": "Kamyon",
+}
+DRINGLICHKEIT_TR = {"Kritisch": "Kritik", "Bald fällig": "Yakında Gerekli", "Unkritisch": "Kritik Değil"}
 
 
 def lade_gespeicherten_ordner() -> str:
@@ -208,6 +257,10 @@ def _lade_und_berechne(ordner: str) -> dict:
     positionen["Deckender Import"] = _deckende_importe(positionen, zugang_vorbereitet)
     positionen["Versandart"] = positionen.apply(_versandart, axis=1)
     positionen["Transportart"] = positionen["Tage bis Ladedatum"].apply(_transportart)
+    positionen["Dringlichkeit"] = positionen["Status"].apply(_dringlichkeit_position)
+
+    artikel = artikel.copy()
+    artikel["Dringlichkeit"] = artikel["Ampel"].map(_DRINGLICHKEIT_TEXT)
 
     datenstand = [
         (label, loaders.datum_der_datei(dateien[t][0], stichtag), Path(dateien[t][0]).name)
@@ -293,8 +346,9 @@ def _zeige_tabelle(
 def _render_legende() -> None:
     with st.expander("Legende"):
         st.markdown(
-            "- **Ampel je Artikel:** 🔴 Rot = erste Fehlmenge ≤14 Tage, "
-            "🟡 Gelb ≤30 Tage, 🟢 Grün sonst\n"
+            "- **Dringlichkeit je Artikel:** 🔴 Kritisch = erste Fehlmenge "
+            "≤14 Tage (oder ueberfaellig) · 🟡 Bald fällig ≤30 Tage · "
+            "🟢 Unkritisch sonst\n"
             "- **Status:** 🔴 Rückstand ungedeckt/Engpass · 🟡 Rückstand mit "
             "Zugang/Zugang zu spät/Rückstand gedeckt · 🟢 Gedeckt/Erledigt\n"
             "- **Versandart:** Gebietsspediteur = Ware kommt rechtzeitig vor "
@@ -302,6 +356,9 @@ def _render_legende() -> None:
             "- **Abbauplan-Transportart** (nach Tagen bis Ladedatum, nur fuer "
             "aktuellen Rückstand/Engpass): 🔴 Luftfracht ≤2 Tage · 🟡 Minivan "
             "3–5 Tage · 🟡 Express LKW 6–8 Tage · 🟢 LKW ab 9 Tage\n"
+            "- **Langfristplanung:** Artikel ohne Rückstand, deren Deckung "
+            "aber absehbar ausgeht - zeigt, wann und wie viel nachbestellt "
+            "werden sollte\n"
             "- **Eskalation** (Deckungsgrad Rückstand durch Transporte): "
             "🟢 ≥80 % · 🟡 50–79 % · 🔴 <50 %"
         )
@@ -352,19 +409,65 @@ def _render_hauptgrafik(artikel: pd.DataFrame) -> None:
             y=alt.Y("Label:N", sort="-x", title=None),
             x=alt.X("Rückstand (Menge):Q", title="Rückstand (Menge)"),
             color=alt.Color(
-                "Ampel:N",
-                scale=alt.Scale(domain=["Rot", "Gelb", "Grün"], range=["#ef4444", "#f59e0b", "#22c55e"]),
-                legend=alt.Legend(title="Ampel"),
+                "Dringlichkeit:N",
+                scale=alt.Scale(
+                    domain=["Kritisch", "Bald fällig", "Unkritisch"],
+                    range=["#ef4444", "#f59e0b", "#22c55e"],
+                ),
+                legend=alt.Legend(title="Dringlichkeit"),
             ),
             tooltip=[
                 alt.Tooltip("Label:N", title="Artikel"),
                 alt.Tooltip("Rückstand (Menge):Q", title="Rückstand", format=",.0f"),
-                alt.Tooltip("Ampel:N", title="Ampel"),
+                alt.Tooltip("Dringlichkeit:N", title="Dringlichkeit"),
             ],
         )
         .properties(height=400, title="Top-Artikel nach Rückstand")
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+# --- Wiederverwendbares Kurvendiagramm: kumulierter Bedarf vs. verfuegbare ---
+# Deckung (Bestand + Zugaenge) ueber die Zeit. Zeigt anschaulich, AB WANN die
+# Deckung nicht mehr ausreicht - genutzt im Rückstand-Drilldown, bei Deckung
+# je Artikel und in der Langfristplanung.
+
+def _verlaufsdiagramm(teilmenge: pd.DataFrame, hoehe: int = 300):
+    teil = teilmenge.sort_values("Ladedatum").copy()
+    teil["Kumulierter Bedarf"] = teil["Offene Menge"].cumsum()
+    teil["Verfügbare Deckung"] = teil["Bestand verfügbar"] + teil["Zugang bis Ladedatum"]
+    verlauf = pd.concat([
+        pd.DataFrame({
+            "Ladedatum": teil["Ladedatum"], "Menge": teil["Verfügbare Deckung"],
+            "Reihe": "Verfügbare Deckung",
+        }),
+        pd.DataFrame({
+            "Ladedatum": teil["Ladedatum"], "Menge": teil["Kumulierter Bedarf"],
+            "Reihe": "Kumulierter Bedarf",
+        }),
+    ])
+    return (
+        alt.Chart(verlauf)
+        .mark_line(point=True, strokeWidth=2.5)
+        .encode(
+            x=alt.X("Ladedatum:T", title="Ladedatum"),
+            y=alt.Y("Menge:Q", title="Menge"),
+            color=alt.Color(
+                "Reihe:N",
+                scale=alt.Scale(
+                    domain=["Verfügbare Deckung", "Kumulierter Bedarf"],
+                    range=["#3B82F6", "#EC4899"],
+                ),
+                legend=alt.Legend(title=None),
+            ),
+            tooltip=[
+                alt.Tooltip("Ladedatum:T", title="Ladedatum"),
+                alt.Tooltip("Reihe:N", title="Reihe"),
+                alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
+            ],
+        )
+        .properties(height=hoehe)
+    )
 
 
 # --- Reiter: Rückstand (Artikel -> Werke/Kunden -> Hauptdiagramm) ------------
@@ -424,7 +527,7 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
     anzeige["Rückstand (Menge)"] = anzeige["Rückstand (Menge)"].apply(_fmt_menge)
     anzeige["Zugänge unterwegs"] = anzeige["Zugänge unterwegs"].apply(_fmt_menge)
     auswahl = st.dataframe(
-        anzeige.style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
+        anzeige.style.map(_faerbe(_DRINGLICHKEIT_FARBEN), subset=["Dringlichkeit"]),
         hide_index=True,
         use_container_width=True,
         on_select="rerun",
@@ -450,38 +553,14 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
     )
 
     if kunde_auswahl == "(Alle Kunden)":
-        kundenbedarf = gewaehlt["Offene Menge gesamt"]
         positionen_gefiltert = positionen_artikel
     else:
         positionen_gefiltert = positionen_artikel[positionen_artikel["Kunde"] == kunde_auswahl]
-        kundenbedarf = positionen_gefiltert["Offene Menge"].sum()
 
-    hauptdiagramm = pd.DataFrame({
-        "Kategorie": ["Kundenbedarf", "Importmenge", "Lagerbestand"],
-        "Menge": [kundenbedarf, gewaehlt["Zugänge unterwegs"], gewaehlt["Bestand verfügbar"]],
-    })
-    chart = (
-        alt.Chart(hauptdiagramm)
-        .mark_bar()
-        .encode(
-            x=alt.X("Kategorie:N", title=None, sort=None),
-            y=alt.Y("Menge:Q", title="Menge"),
-            color=alt.Color(
-                "Kategorie:N",
-                scale=alt.Scale(
-                    domain=["Kundenbedarf", "Importmenge", "Lagerbestand"],
-                    range=["#EC4899", "#3B82F6", "#22c55e"],
-                ),
-                legend=None,
-            ),
-            tooltip=[
-                alt.Tooltip("Kategorie:N", title="Kategorie"),
-                alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
-            ],
-        )
-        .properties(height=280)
-    )
-    st.altair_chart(chart, use_container_width=True)
+    if positionen_gefiltert.empty:
+        st.info("Keine Positionen fuer diese Auswahl.")
+    else:
+        st.altair_chart(_verlaufsdiagramm(positionen_gefiltert), use_container_width=True)
 
     if kunde_auswahl != "(Alle Kunden)":
         _render_reichweite_feld(positionen, norm_nr, kunde_auswahl)
@@ -500,7 +579,7 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
 
 def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None:
     st.caption("Zeile anklicken (Kaestchen links), um Reichweite-Grafik und Kontakt-E-Mail zu sehen.")
-    deckung = _filter_auswahl(artikel, "Ampel", "Ampel", "deckung")
+    deckung = _filter_auswahl(artikel, "Dringlichkeit", "Dringlichkeit", "deckung")
     anzeige_deckung = deckung[ARTIKEL_SPALTEN].copy()
     for s in MENGEN_SPALTEN_ARTIKEL:
         anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_menge)
@@ -509,7 +588,7 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
     for s in DATUM_SPALTEN_ARTIKEL:
         anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_datum)
     auswahl_ereignis = st.dataframe(
-        anzeige_deckung.style.map(_faerbe(_AMPEL_FARBEN), subset=["Ampel"]),
+        anzeige_deckung.style.map(_faerbe(_DRINGLICHKEIT_FARBEN), subset=["Dringlichkeit"]),
         hide_index=True,
         use_container_width=True,
         on_select="rerun",
@@ -529,46 +608,11 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
     grafik_spalte, mail_spalte = st.columns([2, 1])
 
     with grafik_spalte:
-        artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr].sort_values("Ladedatum")
+        artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr]
         if artikel_positionen.empty:
             st.info("Keine Positionen fuer diesen Artikel gefunden.")
         else:
-            verlauf = pd.concat([
-                pd.DataFrame({
-                    "Ladedatum": artikel_positionen["Ladedatum"],
-                    "Menge": artikel_positionen["Bestand verfügbar"]
-                    + artikel_positionen["Zugang bis Ladedatum"],
-                    "Reihe": "Verfügbare Deckung",
-                }),
-                pd.DataFrame({
-                    "Ladedatum": artikel_positionen["Ladedatum"],
-                    "Menge": artikel_positionen["Kum. Bedarf Artikel"],
-                    "Reihe": "Kumulierter Bedarf",
-                }),
-            ])
-            chart = (
-                alt.Chart(verlauf)
-                .mark_line(point=True, strokeWidth=2.5)
-                .encode(
-                    x=alt.X("Ladedatum:T", title="Ladedatum"),
-                    y=alt.Y("Menge:Q", title="Menge"),
-                    color=alt.Color(
-                        "Reihe:N",
-                        scale=alt.Scale(
-                            domain=["Verfügbare Deckung", "Kumulierter Bedarf"],
-                            range=["#3B82F6", "#EC4899"],
-                        ),
-                        legend=alt.Legend(title=None),
-                    ),
-                    tooltip=[
-                        alt.Tooltip("Ladedatum:T", title="Ladedatum"),
-                        alt.Tooltip("Reihe:N", title="Reihe"),
-                        alt.Tooltip("Menge:Q", title="Menge", format=",.0f"),
-                    ],
-                )
-                .properties(height=320)
-            )
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(_verlaufsdiagramm(artikel_positionen, hoehe=320), use_container_width=True)
 
     with mail_spalte:
         kontakte = st.session_state.setdefault("dispo_kontakte", lade_kontakte())
@@ -630,6 +674,53 @@ def _render_abbauplan_tab(positionen: pd.DataFrame) -> None:
     st.dataframe(styler, hide_index=True, use_container_width=True)
 
 
+# --- Reiter: Langfristplanung (vorausschauend nachbestellen) -----------------
+
+def _render_langfrist_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None:
+    st.caption(
+        "Artikel ohne aktuellen Rückstand, deren Deckung aber absehbar ausgeht - "
+        "rechtzeitig nachbestellen, bevor daraus Rückstand wird. Sortiert nach "
+        "verbleibender Reichweite, dringendste zuerst."
+    )
+    vorausschau = artikel[
+        (artikel["Rückstand (Menge)"] <= 0) & artikel["Reichweite (Tage)"].notna()
+    ].copy()
+    if vorausschau.empty:
+        st.success("Alle Artikel ohne Rückstand sind auf absehbare Zeit gedeckt.")
+        return
+
+    fehlmenge_je_artikel = positionen.groupby("Norm-Nr")["Fehlmenge"].sum()
+    vorausschau["Empfohlene Bestellmenge"] = (
+        vorausschau["Norm-Nr"].map(fehlmenge_je_artikel).fillna(0)
+    )
+    vorausschau = vorausschau.sort_values("Reichweite (Tage)")
+
+    anzeige = vorausschau[LANGFRIST_SPALTEN].copy()
+    anzeige["Bestand verfügbar"] = anzeige["Bestand verfügbar"].apply(_fmt_menge)
+    anzeige["Zugänge unterwegs"] = anzeige["Zugänge unterwegs"].apply(_fmt_menge)
+    anzeige["Reichweite (Tage)"] = anzeige["Reichweite (Tage)"].apply(_fmt_tage)
+    anzeige["Nächster Zugang"] = anzeige["Nächster Zugang"].apply(_fmt_datum)
+    anzeige["Empfohlene Bestellmenge"] = anzeige["Empfohlene Bestellmenge"].apply(_fmt_menge)
+
+    auswahl = st.dataframe(
+        anzeige.style.map(_faerbe(_DRINGLICHKEIT_FARBEN), subset=["Dringlichkeit"]),
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="dispo_langfrist_tabelle",
+    )
+    zeilen = auswahl.selection.rows if auswahl else []
+    if not zeilen:
+        return
+
+    gewaehlt = vorausschau.iloc[zeilen[0]]
+    norm_nr = gewaehlt["Norm-Nr"]
+    st.markdown(f"**Verlauf: {norm_nr} – {gewaehlt['Kurztext']}**")
+    artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr]
+    st.altair_chart(_verlaufsdiagramm(artikel_positionen), use_container_width=True)
+
+
 # --- Reiter: Ausgabedatei (Deutsch/Tuerkisch) --------------------------------
 
 def _export_uebersetzen(df: pd.DataFrame, sprache: str) -> pd.DataFrame:
@@ -638,18 +729,36 @@ def _export_uebersetzen(df: pd.DataFrame, sprache: str) -> pd.DataFrame:
         export["Status"] = export["Status"].map(STATUS_TR).fillna(export["Status"])
     if "Versandart" in export.columns and sprache == "Türkçe":
         export["Versandart"] = export["Versandart"].map(VERSANDART_TR).fillna(export["Versandart"])
+    if "Transportart" in export.columns and sprache == "Türkçe":
+        export["Transportart"] = export["Transportart"].map(TRANSPORTART_TR).fillna(export["Transportart"])
+    if "Dringlichkeit" in export.columns and sprache == "Türkçe":
+        export["Dringlichkeit"] = export["Dringlichkeit"].map(DRINGLICHKEIT_TR).fillna(export["Dringlichkeit"])
     if sprache == "Türkçe":
         export = export.rename(columns=UEBERSETZUNG_TR)
     return export
 
 
+def _dringlichkeit_sortierung(positionen: pd.DataFrame) -> pd.DataFrame:
+    """Dringendstes zuerst: Status-Prioritaet, dann moeglichst ueberfaellig/nah."""
+    prioritaet = positionen["Status"].map(_STATUS_PRIORITAET).fillna(99)
+    reihenfolge = pd.DataFrame({
+        "Prioritaet": prioritaet, "Tage bis Ladedatum": positionen["Tage bis Ladedatum"],
+    }, index=positionen.index).sort_values(["Prioritaet", "Tage bis Ladedatum"])
+    return positionen.loc[reihenfolge.index]
+
+
 def _render_export_tab(positionen: pd.DataFrame) -> None:
-    st.caption("Vollstaendige Positionsliste (inkl. Bestellmenge/Geliefert) als Excel-Datei.")
+    st.caption(
+        "Vollstaendige Positionsliste (inkl. Bestellmenge/Geliefert), sortiert "
+        "nach Dringlichkeit - oben steht, was am dringendsten gebraucht wird. "
+        "Inkl. Transportart (Minivan/LKW/...) als Excel-Datei."
+    )
     sprache = st.radio(
         "Sprache", ["Deutsch", "Türkçe"], horizontal=True, key="dispo_export_sprache"
     )
 
-    export_df = positionen[POSITIONEN_SPALTEN_EXPORT].copy()
+    positionen_sortiert = _dringlichkeit_sortierung(positionen)
+    export_df = positionen_sortiert[POSITIONEN_SPALTEN_EXPORT].copy()
     for spalte in DATUM_SPALTEN_EXPORT:
         export_df[spalte] = export_df[spalte].apply(_fmt_datum)
     export_df = _export_uebersetzen(export_df, sprache)
@@ -758,8 +867,12 @@ def render_dispo_tab() -> None:
             _render_uebersicht(artikel)
             _render_hauptgrafik(artikel)
 
-            reiter_rueckstand, reiter_deckung, reiter_abbau, reiter_export = st.tabs(
-                ["Rückstand", "Deckung je Artikel", "Abbauplan", "Ausgabedatei"]
+            (
+                reiter_rueckstand, reiter_deckung, reiter_abbau,
+                reiter_langfrist, reiter_export,
+            ) = st.tabs(
+                ["Rückstand", "Deckung je Artikel", "Abbauplan",
+                 "Langfristplanung", "Ausgabedatei"]
             )
             with reiter_rueckstand:
                 _render_rueckstand_tab(positionen, artikel)
@@ -767,6 +880,8 @@ def render_dispo_tab() -> None:
                 _render_deckung_tab(positionen, artikel)
             with reiter_abbau:
                 _render_abbauplan_tab(positionen)
+            with reiter_langfrist:
+                _render_langfrist_tab(positionen, artikel)
             with reiter_export:
                 _render_export_tab(positionen)
         else:

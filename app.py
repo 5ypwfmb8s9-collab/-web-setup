@@ -188,7 +188,8 @@ def render_start_tab() -> None:
     components.html(HERO_HTML, height=440, scrolling=False)
     st.markdown(
         "<p style='text-align:center;color:#8a8a95;'>"
-        "Waehle oben einen Reiter, um ein Werkzeug zu starten."
+        "Waehle oben einen Reiter, um ein Werkzeug zu starten.<br>"
+        "💡 Hell-/Dunkelmodus: oben rechts im Menü (⋮) unter System/Light/Dark."
         "</p>",
         unsafe_allow_html=True,
     )
