@@ -13,6 +13,7 @@ stecken als eigene Unter-Reiter dahinter. Der Datei-Upload steht ganz unten.
 
 import io
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -39,7 +40,7 @@ TRANSPORTARTEN = ["Luftfracht", "Minivan", "Express LKW", "LKW"]
 # Dringlichkeit (siehe _dringlichkeit_sortierung) - oben steht, was am
 # dringendsten gebraucht wird.
 POSITIONEN_SPALTEN_EXPORT = [
-    "Werk", "Kunde", "Abladestelle", "Norm-Nr", "Kurztext", "Ladedatum",
+    "Werk", "Kunde", "Abladestelle", "Norm-Nr", "VW-Nr", "Ladedatum",
     "Wunschtermin", "Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge",
     "Gedeckt ab", "Verspätung (Tage)", "Deckender Import", "Versandart",
     "Transportart", "Status", "Dringlichkeit",
@@ -54,17 +55,17 @@ POSITIONEN_SPALTEN_DETAIL = [
 ]
 
 RUECKSTAND_ARTIKEL_SPALTEN = [
-    "Norm-Nr", "Kurztext", "Kunden", "Rückstand (Menge)", "Zugänge unterwegs", "Dringlichkeit",
+    "Norm-Nr", "VW-Nr", "Kunden", "Rückstand (Menge)", "Zugänge unterwegs", "Dringlichkeit",
 ]
 
 ARTIKEL_SPALTEN = [
-    "Norm-Nr", "Kurztext", "Kunden", "Bestand verfügbar", "Offene Menge gesamt",
+    "Norm-Nr", "VW-Nr", "Kunden", "Bestand verfügbar", "Offene Menge gesamt",
     "Rückstand (Menge)", "Erste Fehlmenge am", "Zugänge unterwegs",
     "Nächster Zugang", "Reichweite (Tage)", "Dringlichkeit",
 ]
 
 LANGFRIST_SPALTEN = [
-    "Norm-Nr", "Kurztext", "Bestand verfügbar", "Zugänge unterwegs",
+    "Norm-Nr", "VW-Nr", "Bestand verfügbar", "Zugänge unterwegs",
     "Reichweite (Tage)", "Nächster Zugang", "Empfohlene Bestellmenge", "Dringlichkeit",
 ]
 
@@ -131,10 +132,27 @@ _STATUS_PRIORITAET = {
 def _dringlichkeit_position(status: str) -> str:
     return _DRINGLICHKEIT_NACH_STATUS.get(status, "Unkritisch")
 
+
+# VW-Nr (Volkswagen-Teilenummer, z. B. "N91096801") steckt - wenn vorhanden -
+# als Text im Kurztext (Artikelbezeichnung des Kunden), zusammen mit den
+# Schraubenabmessungen. Fuer die Anzeige wird nur die VW-Nr herausgezogen;
+# ist keine enthalten, bleibt das Feld leer (nicht jeder Artikel hat eine).
+_VW_NR_MUSTER = re.compile(r"\bN\d{8}\b")
+
+
+def _vw_nr(kurztext) -> str:
+    treffer = _VW_NR_MUSTER.search(str(kurztext))
+    return treffer.group(0) if treffer else ""
+
+
+def _artikel_label(norm_nr, vw_nr) -> str:
+    vw_nr = str(vw_nr) if vw_nr and pd.notna(vw_nr) else ""
+    return f"{norm_nr} – {vw_nr}" if vw_nr else str(norm_nr)
+
 # --- Uebersetzung fuer die Ausgabedatei --------------------------------------
 UEBERSETZUNG_TR = {
     "Werk": "Tesis", "Kunde": "Müşteri", "Abladestelle": "Boşaltma Yeri",
-    "Norm-Nr": "Parça No", "Kurztext": "Kısa Metin", "Ladedatum": "Yükleme Tarihi",
+    "Norm-Nr": "Parça No", "VW-Nr": "VW No", "Ladedatum": "Yükleme Tarihi",
     "Wunschtermin": "İstenen Tarih", "Bestellmenge": "Sipariş Miktarı",
     "Geliefert": "Teslim Edilen", "Offene Menge": "Açık Miktar",
     "Fehlmenge": "Eksik Miktar", "Gedeckt ab": "Karşılanma Tarihi",
@@ -258,9 +276,11 @@ def _lade_und_berechne(ordner: str) -> dict:
     positionen["Versandart"] = positionen.apply(_versandart, axis=1)
     positionen["Transportart"] = positionen["Tage bis Ladedatum"].apply(_transportart)
     positionen["Dringlichkeit"] = positionen["Status"].apply(_dringlichkeit_position)
+    positionen["VW-Nr"] = positionen["Kurztext"].apply(_vw_nr)
 
     artikel = artikel.copy()
     artikel["Dringlichkeit"] = artikel["Ampel"].map(_DRINGLICHKEIT_TEXT)
+    artikel["VW-Nr"] = artikel["Kurztext"].apply(_vw_nr)
 
     datenstand = [
         (label, loaders.datum_der_datei(dateien[t][0], stichtag), Path(dateien[t][0]).name)
@@ -293,6 +313,35 @@ def _faerbe_positiv(farbe: str):
     def _stil(wert):
         return f"background-color: {farbe}33;" if wert and wert > 0 else ""
     return _stil
+
+
+# --- Tabellenhoehe ohne internes Scrollen + separate Suche -------------------
+# Streamlit zeigt Tabellen sonst in einer festen, kleinen Box mit eigenem
+# Scrollbalken. Hoehe = Kopfzeile + Zeilen in Streamlits eigener Zeilenhoehe
+# (empirisch ermittelt: 35px/Zeile + 40px Kopf), damit immer ALLE Zeilen ohne
+# Scrollen sichtbar sind - bei vielen Artikeln hilft dafuer die Suche darueber.
+
+def _tabellenhoehe(anzahl_zeilen: int) -> int:
+    return 35 * max(anzahl_zeilen, 1) + 40
+
+
+# Ohne feste Breite quetscht Streamlit die VW-Nr (9 Zeichen, z. B. "N91291201")
+# in zu wenige Pixel zusammen, abgeschnitten ohne "...". Deshalb feste Breite.
+_VW_NR_SPALTENKONFIG = {"VW-Nr": st.column_config.TextColumn(width=110)}
+
+
+def _suche(df: pd.DataFrame, spalten: list, key: str) -> pd.DataFrame:
+    begriff = st.text_input(
+        "🔍 Suche", key=key,
+        placeholder="Suchen nach " + " / ".join(spalten),
+    )
+    if not begriff:
+        return df
+    treffer = pd.Series(False, index=df.index)
+    for spalte in spalten:
+        if spalte in df.columns:
+            treffer = treffer | df[spalte].astype(str).str.contains(begriff, case=False, na=False, regex=False)
+    return df[treffer]
 
 
 # --- Zahlen-/Datumsformat: Tausenderpunkt, keine Nachkommastellen -----------
@@ -338,7 +387,10 @@ def _zeige_tabelle(
     styler = anzeige.style
     for spalte, farbkarte in (farben or {}).items():
         styler = styler.map(_faerbe(farbkarte), subset=[spalte])
-    st.dataframe(styler, hide_index=True, use_container_width=True)
+    st.dataframe(
+        styler, hide_index=True, use_container_width=True,
+        height=_tabellenhoehe(len(anzeige)),
+    )
 
 
 # --- Legende + Uebersicht/Eskalation -----------------------------------------
@@ -401,7 +453,7 @@ def _render_hauptgrafik(artikel: pd.DataFrame) -> None:
     if im_rueckstand.empty:
         return
     top = im_rueckstand.nlargest(15, "Rückstand (Menge)").copy()
-    top["Label"] = top["Norm-Nr"].astype(str) + " – " + top["Kurztext"]
+    top["Label"] = top.apply(lambda r: _artikel_label(r["Norm-Nr"], r["VW-Nr"]), axis=1)
     chart = (
         alt.Chart(top)
         .mark_bar()
@@ -523,7 +575,8 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
         st.success("Kein Rückstand - alles im grünen Bereich.")
         return
 
-    anzeige = rueckstand_artikel[RUECKSTAND_ARTIKEL_SPALTEN].copy()
+    gefiltert = _suche(rueckstand_artikel, ["Norm-Nr", "VW-Nr", "Kunden"], key="dispo_suche_rueckstand")
+    anzeige = gefiltert[RUECKSTAND_ARTIKEL_SPALTEN].copy()
     anzeige["Rückstand (Menge)"] = anzeige["Rückstand (Menge)"].apply(_fmt_menge)
     anzeige["Zugänge unterwegs"] = anzeige["Zugänge unterwegs"].apply(_fmt_menge)
     auswahl = st.dataframe(
@@ -532,18 +585,20 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
         use_container_width=True,
         on_select="rerun",
         selection_mode="single-row",
+        height=_tabellenhoehe(len(anzeige)),
+        column_config=_VW_NR_SPALTENKONFIG,
         key="dispo_rueckstand_artikel_tabelle",
     )
     zeilen = auswahl.selection.rows if auswahl else []
     if not zeilen:
         return
 
-    gewaehlt = rueckstand_artikel.iloc[zeilen[0]]
+    gewaehlt = gefiltert.iloc[zeilen[0]]
     norm_nr = gewaehlt["Norm-Nr"]
     positionen_artikel = positionen[positionen["Norm-Nr"] == norm_nr]
 
     st.divider()
-    st.markdown(f"### {norm_nr} – {gewaehlt['Kurztext']}")
+    st.markdown(f"### {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}")
 
     kunden_liste = sorted(positionen_artikel["Kunde"].dropna().unique())
     kunde_auswahl = st.selectbox(
@@ -579,7 +634,11 @@ def _render_rueckstand_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> N
 
 def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None:
     st.caption("Zeile anklicken (Kaestchen links), um Reichweite-Grafik und Kontakt-E-Mail zu sehen.")
-    deckung = _filter_auswahl(artikel, "Dringlichkeit", "Dringlichkeit", "deckung")
+    such_spalte, filter_spalte = st.columns([2, 1])
+    with such_spalte:
+        gefiltert = _suche(artikel, ["Norm-Nr", "VW-Nr", "Kunden"], key="dispo_suche_deckung")
+    with filter_spalte:
+        deckung = _filter_auswahl(gefiltert, "Dringlichkeit", "Dringlichkeit", "deckung")
     anzeige_deckung = deckung[ARTIKEL_SPALTEN].copy()
     for s in MENGEN_SPALTEN_ARTIKEL:
         anzeige_deckung[s] = anzeige_deckung[s].apply(_fmt_menge)
@@ -593,6 +652,8 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
         use_container_width=True,
         on_select="rerun",
         selection_mode="single-row",
+        height=_tabellenhoehe(len(anzeige_deckung)),
+        column_config=_VW_NR_SPALTENKONFIG,
         key="dispo_artikel_tabelle",
     )
 
@@ -604,7 +665,7 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
     norm_nr = gewaehlt["Norm-Nr"]
     norm_nr_key = str(norm_nr)
 
-    st.markdown(f"**Reichweite: {norm_nr} – {gewaehlt['Kurztext']}**")
+    st.markdown(f"**Reichweite: {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}**")
     grafik_spalte, mail_spalte = st.columns([2, 1])
 
     with grafik_spalte:
@@ -641,7 +702,7 @@ def _abbauplan(positionen: pd.DataFrame) -> pd.DataFrame:
     if akut.empty:
         return akut
     pivot = akut.pivot_table(
-        index=["Norm-Nr", "Kurztext"],
+        index=["Norm-Nr", "VW-Nr"],
         columns="Transportart",
         values="Fehlmenge",
         aggfunc="sum",
@@ -667,11 +728,16 @@ def _render_abbauplan_tab(positionen: pd.DataFrame) -> None:
         st.success("Kein aktueller Rückstand/Engpass - kein Abbauplan noetig.")
         return
 
+    plan = _suche(plan, ["Norm-Nr", "VW-Nr"], key="dispo_suche_abbauplan")
     formate = {s: _fmt_menge for s in TRANSPORTARTEN + ["Gesamt offen"]}
     styler = plan.style.format(formate)
     for spalte in TRANSPORTARTEN:
         styler = styler.map(_faerbe_positiv(_TRANSPORTART_FARBEN[spalte]), subset=[spalte])
-    st.dataframe(styler, hide_index=True, use_container_width=True)
+    st.dataframe(
+        styler, hide_index=True, use_container_width=True,
+        height=_tabellenhoehe(len(plan)),
+        column_config=_VW_NR_SPALTENKONFIG,
+    )
 
 
 # --- Reiter: Langfristplanung (vorausschauend nachbestellen) -----------------
@@ -694,6 +760,7 @@ def _render_langfrist_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> No
         vorausschau["Norm-Nr"].map(fehlmenge_je_artikel).fillna(0)
     )
     vorausschau = vorausschau.sort_values("Reichweite (Tage)")
+    vorausschau = _suche(vorausschau, ["Norm-Nr", "VW-Nr"], key="dispo_suche_langfrist")
 
     anzeige = vorausschau[LANGFRIST_SPALTEN].copy()
     anzeige["Bestand verfügbar"] = anzeige["Bestand verfügbar"].apply(_fmt_menge)
@@ -708,6 +775,8 @@ def _render_langfrist_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> No
         use_container_width=True,
         on_select="rerun",
         selection_mode="single-row",
+        height=_tabellenhoehe(len(anzeige)),
+        column_config=_VW_NR_SPALTENKONFIG,
         key="dispo_langfrist_tabelle",
     )
     zeilen = auswahl.selection.rows if auswahl else []
@@ -716,7 +785,7 @@ def _render_langfrist_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> No
 
     gewaehlt = vorausschau.iloc[zeilen[0]]
     norm_nr = gewaehlt["Norm-Nr"]
-    st.markdown(f"**Verlauf: {norm_nr} – {gewaehlt['Kurztext']}**")
+    st.markdown(f"**Verlauf: {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}**")
     artikel_positionen = positionen[positionen["Norm-Nr"] == norm_nr]
     st.altair_chart(_verlaufsdiagramm(artikel_positionen), use_container_width=True)
 
@@ -832,6 +901,29 @@ def _render_datenquelle() -> None:
         st.rerun()
 
 
+_SUBTAB_CSS = """
+<style>
+.st-key-dispo_subtabs div[role="tablist"] {
+    gap: 8px;
+    border-bottom: 2px solid rgba(139,92,246,0.25);
+    margin-bottom: 6px;
+}
+.st-key-dispo_subtabs div[data-testid="stTab"] {
+    padding: 16px 28px !important;
+    border-radius: 10px 10px 0 0;
+    transition: background 0.15s ease;
+}
+.st-key-dispo_subtabs div[data-testid="stTab"] p {
+    font-size: 1.15rem !important;
+    font-weight: 600 !important;
+}
+.st-key-dispo_subtabs div[data-testid="stTab"][data-selected="true"] {
+    background: rgba(139,92,246,0.15);
+}
+</style>
+"""
+
+
 def render_dispo_tab() -> None:
     st.title("Dashboard Dispo")
     st.markdown(
@@ -867,23 +959,25 @@ def render_dispo_tab() -> None:
             _render_uebersicht(artikel)
             _render_hauptgrafik(artikel)
 
-            (
-                reiter_rueckstand, reiter_deckung, reiter_abbau,
-                reiter_langfrist, reiter_export,
-            ) = st.tabs(
-                ["Rückstand", "Deckung je Artikel", "Abbauplan",
-                 "Langfristplanung", "Ausgabedatei"]
-            )
-            with reiter_rueckstand:
-                _render_rueckstand_tab(positionen, artikel)
-            with reiter_deckung:
-                _render_deckung_tab(positionen, artikel)
-            with reiter_abbau:
-                _render_abbauplan_tab(positionen)
-            with reiter_langfrist:
-                _render_langfrist_tab(positionen, artikel)
-            with reiter_export:
-                _render_export_tab(positionen)
+            st.markdown(_SUBTAB_CSS, unsafe_allow_html=True)
+            with st.container(key="dispo_subtabs"):
+                (
+                    reiter_rueckstand, reiter_deckung, reiter_abbau,
+                    reiter_langfrist, reiter_export,
+                ) = st.tabs(
+                    ["Rückstand", "Deckung je Artikel", "Abbauplan",
+                     "Langfristplanung", "Ausgabedatei"]
+                )
+                with reiter_rueckstand:
+                    _render_rueckstand_tab(positionen, artikel)
+                with reiter_deckung:
+                    _render_deckung_tab(positionen, artikel)
+                with reiter_abbau:
+                    _render_abbauplan_tab(positionen)
+                with reiter_langfrist:
+                    _render_langfrist_tab(positionen, artikel)
+                with reiter_export:
+                    _render_export_tab(positionen)
         else:
             st.info("Bitte unten SAP-Exporte hochladen, um das Dashboard zu sehen.")
 
