@@ -1,4 +1,4 @@
-"""VW AI - Streamlit-Oberflaeche.
+"""DISPO PRO - Streamlit-Oberflaeche.
 
 Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
 (automatische Verarbeitung von Excel-Ladelisten) und "Reklamationen"
@@ -39,7 +39,7 @@ from reklamation_lokal import (
     speichere_pdf,
 )
 
-st.set_page_config(page_title="VW AI", page_icon="assets/icon.png", layout="wide")
+st.set_page_config(page_title="DISPO PRO", page_icon="assets/icon.png", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Globales Styling: dunkler Hintergrund + Copilot-Gradient-Schimmer auf
@@ -106,12 +106,12 @@ HERO_HTML = """
   <canvas id="vwai-particles" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
   <div style="position:absolute;inset:0;display:flex;flex-direction:column;
               align-items:center;justify-content:center;text-align:center;">
-    <div style="font-size:68px;font-weight:800;letter-spacing:2px;
+    <div style="font-size:56px;font-weight:800;letter-spacing:2px;
                 background:linear-gradient(90deg,#8B5CF6,#3B82F6,#EC4899,#8B5CF6);
                 background-size:300% 300%;
                 animation:hero-shimmer 6s ease infinite;
                 -webkit-background-clip:text;background-clip:text;color:transparent;">
-      VW AI
+      DISPO PRO
     </div>
     <div style="color:#9a9aa5;margin-top:10px;font-size:16px;">
       Intelligente Werkzeuge fuer Logistik &amp; Qualitaet

@@ -1,4 +1,4 @@
-"""Oberflaeche fuer den Reiter "Dashboard Dispo" in VW AI.
+"""Oberflaeche fuer den Reiter "Dashboard Dispo" in DISPO PRO.
 
 Zeigt die von dispo_dashboard (config/loaders/logic - unveraendert genutzt)
 berechnete Auswertung an. Die taeglichen SAP-Exporte koennen entweder direkt
@@ -167,6 +167,45 @@ def _artikel_label(norm_nr, vw_nr) -> str:
     vw_nr = str(vw_nr) if vw_nr and pd.notna(vw_nr) else ""
     return f"{norm_nr} – {vw_nr}" if vw_nr else str(norm_nr)
 
+
+# Füllmenge (Standard-Gebindemenge je Kundenwerk + Artikel) aus dem zweiten
+# Blatt der Artikelliste (Tabelle1: Werk, Abladestelle, ..., Norm Nr., ...,
+# Füllmenge). Steht ein (Werk, Norm-Nr) dort nicht drin, wird ersatzweise die
+# haeufigste Füllmenge dieses Artikels ueber alle Werke verwendet.
+
+def _lade_fuellmengen() -> tuple[dict, dict]:
+    try:
+        tabelle = pd.read_excel(ARTIKELLISTE_DATEI, sheet_name="Tabelle1")
+    except (FileNotFoundError, ValueError):
+        return {}, {}
+    tabelle = tabelle.rename(columns={"Norm NR.": "Norm-Nr", "Füllmenge": "Fuellmenge"})
+    tabelle = tabelle.dropna(subset=["Norm-Nr", "Fuellmenge"]).copy()
+    tabelle["Norm-Nr"] = pd.to_numeric(tabelle["Norm-Nr"], errors="coerce")
+    tabelle["Fuellmenge"] = pd.to_numeric(tabelle["Fuellmenge"], errors="coerce")
+    tabelle = tabelle.dropna(subset=["Norm-Nr", "Fuellmenge"])
+    tabelle["Norm-Nr"] = tabelle["Norm-Nr"].astype(int)
+    tabelle["Werk"] = tabelle["Werk"].astype(str).str.strip()
+
+    je_werk = {
+        (werk, norm_nr): menge
+        for werk, norm_nr, menge in zip(tabelle["Werk"], tabelle["Norm-Nr"], tabelle["Fuellmenge"])
+    }
+    je_artikel = (
+        tabelle.groupby("Norm-Nr")["Fuellmenge"]
+        .agg(lambda s: s.mode().iloc[0])
+        .to_dict()
+    )
+    return je_werk, je_artikel
+
+
+_FUELLMENGE_JE_WERK, _FUELLMENGE_JE_ARTIKEL = _lade_fuellmengen()
+
+
+def _fuellmenge(werk, norm_nr):
+    if (werk, norm_nr) in _FUELLMENGE_JE_WERK:
+        return _FUELLMENGE_JE_WERK[(werk, norm_nr)]
+    return _FUELLMENGE_JE_ARTIKEL.get(norm_nr)
+
 # --- Uebersetzung fuer die Ausgabedatei --------------------------------------
 UEBERSETZUNG_TR = {
     "Werk": "Tesis", "Kunde": "Müşteri", "Abladestelle": "Boşaltma Yeri",
@@ -277,6 +316,58 @@ def _deckende_importe(positionen: pd.DataFrame, zugang_vorbereitet: pd.DataFrame
     return positionen.apply(_lookup, axis=1)
 
 
+# --- Scheindeckung: Bestand da, aber wegen Chargen-Splitting nicht nutzbar --
+# Eine Position gilt laut Dispositionslogik als gedeckt, sobald die SUMME des
+# verfuegbaren Bestands (ueber alle Chargen) ausreicht. Praktisch kann eine
+# einzelne Lieferung/ein Füllmenge-Gebinde aber nur aus EINER Chargennummer
+# kommen - reicht keine einzelne Charge allein fuer die offene Menge, ist der
+# Bestand trotz ausreichender Summe nicht wirklich nutzbar ("Bestand da, aber
+# nicht offen [als Problem erkannt]"). Nur fuer das Nahfenster ab Stichtag
+# geprueft (SCHEINDECKUNG_FENSTER_TAGE), sonst waere die Liste unueberschaubar
+# lang und wenig handlungsrelevant.
+SCHEINDECKUNG_FENSTER_TAGE = 7
+
+SCHEINDECKUNG_SPALTEN = [
+    "Werk", "Kunde", "Norm-Nr", "VW-Nr", "Ladedatum", "Offene Menge",
+    "Bestand (Summe)", "Bestand (größte Charge)", "Anzahl Chargen", "Füllmenge",
+]
+
+
+def _scheindeckung(positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame, stichtag) -> pd.DataFrame:
+    verwendbar = bestand_je_charge[bestand_je_charge["Bestandsart"].isin(list(config.BESTAND_VERFUEGBAR))]
+    je_charge = verwendbar.groupby(["Norm-Nr", "Charge"])["Menge"].sum()
+    kennzahlen = je_charge.groupby("Norm-Nr").agg(
+        bestand_summe="sum", bestand_max_charge="max", anzahl_chargen="count",
+    )
+
+    st_stichtag = pd.Timestamp(stichtag)
+    fenster_ende = st_stichtag + pd.Timedelta(days=SCHEINDECKUNG_FENSTER_TAGE)
+    nahfenster = positionen[
+        (positionen["Ladedatum"] >= st_stichtag) & (positionen["Ladedatum"] <= fenster_ende)
+        & (positionen["Fehlmenge"] <= 0) & (positionen["Offene Menge"] > 0)
+    ].copy()
+    if nahfenster.empty:
+        return nahfenster
+
+    nahfenster = nahfenster.join(kennzahlen, on="Norm-Nr")
+    nahfenster = nahfenster[
+        nahfenster["bestand_max_charge"].notna()
+        & (nahfenster["bestand_max_charge"] < nahfenster["Offene Menge"])
+    ].copy()
+    if nahfenster.empty:
+        return nahfenster
+
+    nahfenster["Füllmenge"] = nahfenster.apply(
+        lambda r: _fuellmenge(r["Werk"], r["Norm-Nr"]), axis=1
+    )
+    nahfenster = nahfenster.rename(columns={
+        "bestand_summe": "Bestand (Summe)",
+        "bestand_max_charge": "Bestand (größte Charge)",
+        "anzahl_chargen": "Anzahl Chargen",
+    })
+    return nahfenster[SCHEINDECKUNG_SPALTEN].sort_values("Ladedatum").reset_index(drop=True)
+
+
 def _lade_und_berechne(ordner: str) -> dict:
     dateien = loaders.neueste_dateien(ordner)
     fehlend = [t for t in ["bedarf", "bestand", "zugang"] if t not in dateien]
@@ -285,7 +376,7 @@ def _lade_und_berechne(ordner: str) -> dict:
 
     stichtag = loaders.datum_der_datei(dateien["bedarf"][0])
     bedarf = loaders.lade_bedarf(dateien["bedarf"][0])
-    _, bestand_artikel = loaders.lade_bestand(dateien["bestand"][0])
+    bestand_je_charge, bestand_artikel = loaders.lade_bestand(dateien["bestand"][0])
     zugang = loaders.lade_zugang(dateien["zugang"][0])
     positionen, artikel, zugang_vorbereitet = logic.berechne(bedarf, bestand_artikel, zugang, stichtag)
 
@@ -309,6 +400,7 @@ def _lade_und_berechne(ordner: str) -> dict:
         "positionen": positionen,
         "artikel": artikel,
         "datenstand": datenstand,
+        "scheindeckung": _scheindeckung(positionen, bestand_je_charge, stichtag),
     }
 
 
@@ -431,6 +523,36 @@ def _render_legende() -> None:
             "werden sollte\n"
             "- **Eskalation** (Deckungsgrad Rückstand durch Transporte): "
             "🟢 ≥80 % · 🟡 50–79 % · 🔴 <50 %"
+        )
+
+
+def _render_scheindeckung_warnung(scheindeckung: pd.DataFrame) -> None:
+    if scheindeckung.empty:
+        return
+    anzahl = len(scheindeckung)
+    mehrzahl = "en" if anzahl != 1 else ""
+    with st.expander(
+        f"⚠️ Bestand vorhanden, aber nicht wirklich nutzbar ({anzahl} Position{mehrzahl})",
+        expanded=False,
+    ):
+        st.caption(
+            f"Geprueft nur fuer die naechsten {SCHEINDECKUNG_FENSTER_TAGE} Tage ab "
+            "Stichtag (Ladedatum). Diese Positionen gelten im System als gedeckt "
+            "(Fehlmenge 0, durch Bestand und/oder eingeplante Zugaenge), aber vom "
+            "aktuellen Lagerbestand allein deckt KEINE einzelne Charge die offene "
+            "Menge - eine Lieferung/ein Füllmenge-Gebinde kann aber nur aus EINER "
+            "Chargennummer kommen. Die Bestandssumme kann daher trotz ausreichender "
+            "Gesamtmenge nicht in einem Stueck verwendet werden. Füllmenge nur zur "
+            "Information mit angezeigt (Standard-Gebindemenge je Werk/Artikel)."
+        )
+        anzeige = scheindeckung.copy()
+        for s in ["Offene Menge", "Bestand (Summe)", "Bestand (größte Charge)", "Füllmenge"]:
+            anzeige[s] = anzeige[s].apply(_fmt_menge)
+        anzeige["Ladedatum"] = anzeige["Ladedatum"].apply(_fmt_datum)
+        st.dataframe(
+            anzeige, hide_index=True, use_container_width=True,
+            height=_tabellenhoehe(len(anzeige)),
+            column_config=_VW_NR_SPALTENKONFIG,
         )
 
 
@@ -974,6 +1096,7 @@ def render_dispo_tab() -> None:
             if veraltete_quellen:
                 warnung_platz.warning("⚠️ Veraltete Daten: " + ", ".join(veraltete_quellen))
 
+            _render_scheindeckung_warnung(daten["scheindeckung"])
             _render_uebersicht(artikel)
             _render_hauptgrafik(artikel)
 

@@ -1,6 +1,6 @@
 """
 Dispositionslogik, unabhängig von Excel oder Oberfläche.
-Dieselben Regeln stecken als Formeln im Excel-Report; das Dashboard in VWAI nutzt diese Funktionen.
+Dieselben Regeln stecken als Formeln im Excel-Report; das Dashboard in DISPO PRO nutzt diese Funktionen.
 """
 import numpy as np
 import pandas as pd

@@ -4,7 +4,7 @@ cd /d "%~dp0"
 set LOG=%~dp0start_log.txt
 
 echo ============================================
-echo   VW AI wird gestartet
+echo   DISPO PRO wird gestartet
 echo ============================================
 echo.
 echo Ein Log dieses Starts wird gespeichert in:
