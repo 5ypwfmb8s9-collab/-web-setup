@@ -7,4 +7,5 @@ __pycache__/
 .dispo_sap_ordner.txt
 .dispo_kontakte.json
 .dispo_reichweite.json
+.reklamation_pdf_eintraege.json
 start_log.txt

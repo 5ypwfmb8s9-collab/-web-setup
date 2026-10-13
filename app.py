@@ -2,7 +2,8 @@
 
 Hauptseite (Start) + Reiter fuer die einzelnen Werkzeuge: "Ladelisten"
 (automatische Verarbeitung von Excel-Ladelisten) und "Reklamationen"
-(Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung).
+(Unterreiter: Ausfallfracht-Dashboard mit lokaler Drag-&-Drop-Erfassung,
+und Reklamationen PDF-Auswertung als cloud-faehiger Testaufbau).
 """
 
 import io
@@ -38,6 +39,7 @@ from reklamation_lokal import (
     speichere_excel,
     speichere_pdf,
 )
+from reklamation_pdf import render_reklamation_pdf_tab
 
 st.set_page_config(page_title="DISPO PRO", page_icon="assets/icon.png", layout="wide")
 
@@ -303,6 +305,21 @@ def render_ladelisten_tab() -> None:
 
 def render_reklamationen_tab() -> None:
     st.title("Reklamationen")
+    st.markdown(
+        '<span class="vwai-badge">✨ Reklamationen</span>',
+        unsafe_allow_html=True,
+    )
+
+    reiter_ausfallfracht, reiter_pdf = st.tabs(
+        ["Ausfallfracht (lokal)", "Reklamationen PDF-Auswertung"]
+    )
+    with reiter_ausfallfracht:
+        render_ausfallfracht_sub_tab()
+    with reiter_pdf:
+        render_reklamation_pdf_tab()
+
+
+def render_ausfallfracht_sub_tab() -> None:
     st.markdown(
         '<span class="vwai-badge">✨ Ausfallfracht-Dashboard</span>',
         unsafe_allow_html=True,
