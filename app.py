@@ -40,6 +40,7 @@ from reklamation_lokal import (
     speichere_pdf,
 )
 from reklamation_pdf import render_reklamation_pdf_tab
+from planung_erstellung import render_planung_tab
 
 st.set_page_config(page_title="DISPO PRO", page_icon="assets/icon.png", layout="wide")
 
@@ -536,8 +537,8 @@ def render_ausfallfracht_sub_tab() -> None:
                 )
 
 
-tab_start, tab_dispo, tab_ladelisten, tab_reklamationen = st.tabs(
-    ["Start", "Dashboard Dispo", "Ladelisten", "Reklamationen"]
+tab_start, tab_dispo, tab_planung, tab_ladelisten, tab_reklamationen = st.tabs(
+    ["Start", "Dashboard Dispo", "Planung Erstellung", "Ladelisten", "Reklamationen"]
 )
 
 with tab_start:
@@ -545,6 +546,9 @@ with tab_start:
 
 with tab_dispo:
     render_dispo_tab()
+
+with tab_planung:
+    render_planung_tab()
 
 with tab_ladelisten:
     render_ladelisten_tab()
