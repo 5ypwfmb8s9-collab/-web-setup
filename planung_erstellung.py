@@ -18,14 +18,20 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   "Fehlmenge (nur Bestand)" - Zugaenge zaehlen fuer die Planung nicht als
   verfuegbar, auch wenn sie laut SAP ZMM1000 vor dem Ladedatum ankommen
   wuerden.
-- Fehlmenge (nur Bestand) > 0 -> Blatt "Rueckstaende", rote Schrift. Dort
-  wird zusaetzlich - je Artikel, nach Dringlichkeit (aeltestes Ladedatum
-  zuerst) - der naechste noch nicht zugeordnete Zugang aus ZMM1000 in
-  Spalte M "Lieferschein" eingetragen (Referenznummer/NRI, Ankunft-Datum,
-  Menge), damit erkennbar ist, was/wann dafuer bereits unterwegs ist -
-  auch wenn die Ankunft erst NACH dem Planungsdatum liegt.
-- Fehlmenge (nur Bestand) <= 0 (physischer Bestand reicht) -> Blatt
-  "Almanca": Spalte C "Lagerort"
+- Reicht der Bestand fuer eine Position nur TEILWEISE, wird genau der
+  gedeckte Teil eingeplant und nur der fehlende Rest geht in die
+  Rueckstaende - nicht die ganze Position. Dieselbe Abladestelle/Artikel-
+  Kombination kann dadurch in beiden Blaettern auftauchen, je mit ihrer
+  eigenen Teilmenge.
+- Fehlmenge (nur Bestand) > 0 -> Teilmenge in Blatt "Rueckstaende", rote
+  Schrift. Dort wird zusaetzlich - je Artikel, nach Dringlichkeit
+  (aeltestes Ladedatum zuerst) - der naechste noch nicht zugeordnete
+  Zugang aus ZMM1000 in Spalte M "Lieferschein" eingetragen
+  (Referenznummer/NRI, Ankunft-Datum, Menge), damit erkennbar ist,
+  was/wann dafuer bereits unterwegs ist - auch wenn die Ankunft erst NACH
+  dem Planungsdatum liegt.
+- Durch physischen Bestand gedeckte Teilmenge -> Blatt "Almanca": Spalte
+  C "Lagerort"
   = Abladestelle aus dem Kundenauftrag (per echten Daten verifiziert:
   Dispo-Abladestelle entspricht hier der Vorlagen-Spalte "Lagerort", NICHT
   der Vorlagen-Spalte "Abladestelle" - letztere wird aus einer anderen
@@ -149,17 +155,27 @@ def _splitte_auftraege(positionen: pd.DataFrame, planungsdatum) -> tuple[pd.Data
     zaehlen fuer die Planung nicht, auch wenn sie laut ZMM1000 rechtzeitig
     ankommen wuerden. Der Bestand wird je Artikel (ueber alle Werke/Kunden
     hinweg, wie auch sonst in der Dispo-Logik) in Reihenfolge des
-    Ladedatums verbraucht - sobald er fuer einen Artikel aufgebraucht ist,
-    gilt alles Weitere als Rueckstand.
+    Ladedatums verbraucht.
+
+    WICHTIG: Reicht der verbleibende Bestand nur fuer einen TEIL einer
+    einzelnen Lieferplan-Position, wird genau dieser Teil eingeplant und
+    nur der Rest geht in die Rueckstaende - nicht die ganze Position. Eine
+    Position kann dadurch in BEIDEN Bloecken auftauchen, je mit ihrer
+    eigenen Teilmenge.
     """
     fenster = positionen[positionen["Ladedatum"] <= pd.Timestamp(planungsdatum)].copy()
     fenster = fenster.sort_values("Ladedatum")
-    fenster["Fehlmenge (nur Bestand)"] = np.minimum(
+    fehlmenge_nur_bestand = np.minimum(
         fenster["Offene Menge"],
         fenster["Kum. Bedarf Artikel"] - fenster["Bestand verfügbar"],
     ).clip(lower=0)
-    rueckstand = fenster[fenster["Fehlmenge (nur Bestand)"] > 0]
-    planbar = fenster[(fenster["Fehlmenge (nur Bestand)"] <= 0) & (fenster["Offene Menge"] > 0)]
+    fenster["Menge (Rückstand)"] = fehlmenge_nur_bestand
+    fenster["Menge (planbar)"] = fenster["Offene Menge"] - fehlmenge_nur_bestand
+
+    rueckstand = fenster[fenster["Menge (Rückstand)"] > 0].copy()
+    rueckstand["Offene Menge"] = rueckstand["Menge (Rückstand)"]
+    planbar = fenster[fenster["Menge (planbar)"] > 0].copy()
+    planbar["Offene Menge"] = planbar["Menge (planbar)"]
     return rueckstand, planbar
 
 
