@@ -399,6 +399,7 @@ def _lade_und_berechne(ordner: str) -> dict:
         "stichtag": stichtag,
         "positionen": positionen,
         "artikel": artikel,
+        "zugang": zugang_vorbereitet,
         "datenstand": datenstand,
         "scheindeckung": _scheindeckung(positionen, bestand_je_charge, stichtag),
     }

@@ -12,8 +12,20 @@ noetig, Dispo muss vorher geladen sein.
 
 Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
 - Kundenauftraege vom aeltesten Ladedatum bis zum gewaehlten Planungsdatum.
-- Fehlmenge > 0 (nicht gedeckt) -> Blatt "Rueckstaende", rote Schrift.
-- Fehlmenge <= 0 (Bestand reicht) -> Blatt "Almanca": Spalte C "Lagerort"
+- Planbar ist NUR, was der aktuell PHYSISCH VORHANDENE Bestand deckt (nicht
+  die "Fehlmenge" aus dem Dashboard Dispo, die auch unterwegs befindliche
+  Zugaenge mitzaehlt). Das ergibt eine eigene, strengere Kennzahl
+  "Fehlmenge (nur Bestand)" - Zugaenge zaehlen fuer die Planung nicht als
+  verfuegbar, auch wenn sie laut SAP ZMM1000 vor dem Ladedatum ankommen
+  wuerden.
+- Fehlmenge (nur Bestand) > 0 -> Blatt "Rueckstaende", rote Schrift. Dort
+  wird zusaetzlich - je Artikel, nach Dringlichkeit (aeltestes Ladedatum
+  zuerst) - der naechste noch nicht zugeordnete Zugang aus ZMM1000 in
+  Spalte M "Lieferschein" eingetragen (Referenznummer/NRI, Ankunft-Datum,
+  Menge), damit erkennbar ist, was/wann dafuer bereits unterwegs ist -
+  auch wenn die Ankunft erst NACH dem Planungsdatum liegt.
+- Fehlmenge (nur Bestand) <= 0 (physischer Bestand reicht) -> Blatt
+  "Almanca": Spalte C "Lagerort"
   = Abladestelle aus dem Kundenauftrag (per echten Daten verifiziert:
   Dispo-Abladestelle entspricht hier der Vorlagen-Spalte "Lagerort", NICHT
   der Vorlagen-Spalte "Abladestelle" - letztere wird aus einer anderen
@@ -42,6 +54,7 @@ import io
 import math
 from pathlib import Path
 
+import numpy as np
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -129,12 +142,24 @@ def _palettenspezifikation(lagerort: str, norm_nr) -> dict:
 
 def _splitte_auftraege(positionen: pd.DataFrame, planungsdatum) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Kundenauftraege vom aeltesten Ladedatum bis zum Planungsdatum.
-    Fehlmenge > 0 -> Rueckstand, sonst -> planbar (Bestand deckt die
-    offene Menge lt. Dispo-Logik)."""
+
+    Anders als die "Fehlmenge" im Dashboard Dispo (die Bestand UND bereits
+    unterwegs befindliche Zugaenge als Deckung zaehlt) wird hier nur der
+    aktuell physisch vorhandene Bestand als "planbar" gewertet - Zugaenge
+    zaehlen fuer die Planung nicht, auch wenn sie laut ZMM1000 rechtzeitig
+    ankommen wuerden. Der Bestand wird je Artikel (ueber alle Werke/Kunden
+    hinweg, wie auch sonst in der Dispo-Logik) in Reihenfolge des
+    Ladedatums verbraucht - sobald er fuer einen Artikel aufgebraucht ist,
+    gilt alles Weitere als Rueckstand.
+    """
     fenster = positionen[positionen["Ladedatum"] <= pd.Timestamp(planungsdatum)].copy()
     fenster = fenster.sort_values("Ladedatum")
-    rueckstand = fenster[fenster["Fehlmenge"] > 0]
-    planbar = fenster[(fenster["Fehlmenge"] <= 0) & (fenster["Offene Menge"] > 0)]
+    fenster["Fehlmenge (nur Bestand)"] = np.minimum(
+        fenster["Offene Menge"],
+        fenster["Kum. Bedarf Artikel"] - fenster["Bestand verfügbar"],
+    ).clip(lower=0)
+    rueckstand = fenster[fenster["Fehlmenge (nur Bestand)"] > 0]
+    planbar = fenster[(fenster["Fehlmenge (nur Bestand)"] <= 0) & (fenster["Offene Menge"] > 0)]
     return rueckstand, planbar
 
 
@@ -291,11 +316,52 @@ def _schreibe_zeilen(ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_f
         zeile_nr += 1
 
 
-def _schreibe_rueckstaende(ws, rueckstand: pd.DataFrame) -> None:
+def _zugang_warteschlangen_je_artikel(zugang_vorbereitet: pd.DataFrame | None) -> dict:
+    """Norm-Nr -> Liste der noch nicht zugeordneten Zugaenge (Referenz/NRI,
+    Ankunft gerechnet, Menge), sortiert nach Ankunft aufsteigend - fuer die
+    Zuordnung "naechster Zugang" je Rueckstandszeile."""
+    if zugang_vorbereitet is None or zugang_vorbereitet.empty:
+        return {}
+    warteschlangen: dict = {}
+    for norm_nr, gruppe in zugang_vorbereitet.sort_values("Ankunft gerechnet").groupby("Norm-Nr"):
+        warteschlangen[norm_nr] = gruppe[["Referenz", "Ankunft gerechnet", "Menge"]].to_dict("records")
+    return warteschlangen
+
+
+def _formatiere_zugang_info(zugang: dict) -> str:
+    ankunft = pd.Timestamp(zugang["Ankunft gerechnet"])
+    menge = f"{zugang['Menge']:,.0f}".replace(",", ".")
+    referenz = zugang["Referenz"] or "(ohne Referenz)"
+    return f"{referenz} – {ankunft:%d.%m.%Y} – {menge} Stk"
+
+
+def _ordne_zugaenge_zu(gruppiert: pd.DataFrame, zugang_warteschlangen: dict) -> pd.DataFrame:
+    """Je Artikel, nach Dringlichkeit (aeltestes Ladedatum zuerst), den
+    naechsten noch freien Zugang zuordnen - auch wenn er erst nach dem
+    Planungsdatum ankommt (nur als Information, zaehlt nicht als planbar)."""
+    gruppiert = gruppiert.copy()
+    gruppiert["Zugang Info"] = ""
+    for norm_nr in gruppiert["Norm-Nr"].unique():
+        warteschlange = list(zugang_warteschlangen.get(norm_nr, []))
+        if not warteschlange:
+            continue
+        reihenfolge = gruppiert[gruppiert["Norm-Nr"] == norm_nr].sort_values("Ladedatum").index
+        for idx in reihenfolge:
+            if not warteschlange:
+                break
+            gruppiert.loc[idx, "Zugang Info"] = _formatiere_zugang_info(warteschlange.pop(0))
+    return gruppiert
+
+
+def _schreibe_rueckstaende(ws, rueckstand: pd.DataFrame, zugang_warteschlangen: dict) -> int:
+    """Schreibt die Rueckstaende in die Vorlage, gibt die Anzahl Zeilen mit
+    zugeordnetem Zugang zurueck (fuer die Kennzahlen-Anzeige)."""
     gruppiert = _gruppiere_je_abladestelle_artikel(rueckstand)
+    gruppiert = _ordne_zugaenge_zu(gruppiert, zugang_warteschlangen)
     zeile_nr = ERSTE_DATENZEILE
     aktuelle_abladestelle = None
     rote_schrift = Font(size=15, color=ROT)
+    mit_zugang = 0
     for _, eintrag in gruppiert.iterrows():
         if aktuelle_abladestelle is not None and eintrag["Abladestelle"] != aktuelle_abladestelle:
             zeile_nr += 1
@@ -306,7 +372,12 @@ def _schreibe_rueckstaende(ws, rueckstand: pd.DataFrame) -> None:
         ws.cell(row=zeile_nr, column=9, value=eintrag["Menge"]).font = rote_schrift
         # Ladedatum (fuer Lageraufträge) in die Spalte "Lagerauftrag" (L).
         ws.cell(row=zeile_nr, column=12, value=eintrag["Ladedatum"].strftime("%d.%m.%Y")).font = rote_schrift
+        # Naechster noch nicht verplanter Zugang (NRI/Datum/Menge) in "Lieferschein" (M).
+        if eintrag["Zugang Info"]:
+            ws.cell(row=zeile_nr, column=13, value=eintrag["Zugang Info"]).font = rote_schrift
+            mit_zugang += 1
         zeile_nr += 1
+    return mit_zugang
 
 
 def _palettenspezifikation_abdeckung(planbar: pd.DataFrame) -> tuple[int, int]:
@@ -322,15 +393,19 @@ def _palettenspezifikation_abdeckung(planbar: pd.DataFrame) -> tuple[int, int]:
     return gefunden, len(kombinationen)
 
 
-def erstelle_planungsdatei(positionen: pd.DataFrame, planungsdatum) -> tuple[bytes, dict]:
+def erstelle_planungsdatei(
+    positionen: pd.DataFrame, zugang_vorbereitet: pd.DataFrame, planungsdatum
+) -> tuple[bytes, dict]:
     rueckstand, planbar = _splitte_auftraege(positionen, planungsdatum)
     planungszeilen, dhl_ups_zeilen = _baue_planung_und_versand(planbar)
     palette_gefunden, palette_gesamt = _palettenspezifikation_abdeckung(planbar)
+    zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
     _schreibe_zeilen(wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False)
     _schreibe_zeilen(wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True)
-    _schreibe_rueckstaende(wb["Rückstände"], rueckstand)
+    rueckstand_zeilen = len(_gruppiere_je_abladestelle_artikel(rueckstand))
+    rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand, zugang_warteschlangen)
     wb["Almanca"]["M2"] = pd.Timestamp(planungsdatum).strftime("%d.%m. VW")
 
     puffer = io.BytesIO()
@@ -339,6 +414,8 @@ def erstelle_planungsdatei(positionen: pd.DataFrame, planungsdatum) -> tuple[byt
 
     kennzahlen = {
         "rueckstand_artikel": rueckstand["Norm-Nr"].nunique(),
+        "rueckstand_zeilen": rueckstand_zeilen,
+        "rueckstand_mit_zugang": rueckstand_mit_zugang,
         "planung_zeilen": len(planungszeilen),
         "dhl_ups_zeilen": len(dhl_ups_zeilen),
         "palette_spezifikation_gefunden": palette_gefunden,
@@ -357,9 +434,14 @@ def render_planung_tab() -> None:
     )
     st.caption(
         "Erster Testaufbau. Nutzt dieselben Daten wie Dashboard Dispo "
-        "(Bedarf + Bestand) - dort bitte zuerst die SAP-Exporte hochladen. "
-        "Die Mix-Paletten-Zusammenlegung ist eine Heuristik (groesste Reste "
-        "zuerst kombinieren) - bitte mit echten Tagesdaten pruefen."
+        "(Bedarf + Bestand + Zugänge) - dort bitte zuerst die SAP-Exporte "
+        "hochladen. Planbar ist nur, was der aktuell PHYSISCH vorhandene "
+        "Bestand deckt - unterwegs befindliche Zugänge zählen hier nicht "
+        "als verfügbar (anders als die Fehlmenge im Dashboard Dispo) und "
+        "werden stattdessen als Info (Referenz/NRI, Ankunftsdatum, Menge) "
+        "in die jeweilige Rückstandszeile geschrieben. Die Mix-Paletten-"
+        "Zusammenlegung ist eine Heuristik (größte Reste zuerst kombinieren)"
+        " - bitte mit echten Tagesdaten prüfen."
     )
 
     daten = st.session_state.get("dispo_daten")
@@ -375,7 +457,9 @@ def render_planung_tab() -> None:
 
     if st.button("📋 Planung erstellen", key="planung_erstellen"):
         with st.spinner("Planung wird erstellt..."):
-            inhalt, kennzahlen = erstelle_planungsdatei(daten["positionen"], planungsdatum)
+            inhalt, kennzahlen = erstelle_planungsdatei(
+                daten["positionen"], daten.get("zugang"), planungsdatum
+            )
         st.session_state["planung_datei"] = inhalt
         st.session_state["planung_kennzahlen"] = kennzahlen
         st.session_state["planung_erstellt_fuer"] = planungsdatum
@@ -403,6 +487,17 @@ def render_planung_tab() -> None:
             "ausweichen, statt die hoehere Kapazitaet zu nutzen."
         )
     c3.metric("Zeilen DHL/UPS", kennzahlen["dhl_ups_zeilen"])
+
+    rueckstand_zeilen = kennzahlen.get("rueckstand_zeilen", 0)
+    rueckstand_mit_zugang = kennzahlen.get("rueckstand_mit_zugang", 0)
+    if rueckstand_zeilen:
+        st.caption(
+            f"ℹ️ {rueckstand_mit_zugang} von {rueckstand_zeilen} Rückstandszeilen "
+            "haben einen zugeordneten nächsten Zugang (Spalte \"Lieferschein\": "
+            "Referenz/NRI, Ankunftsdatum, Menge) - auch wenn dieser erst nach "
+            "dem Planungsdatum ankommt. Die übrigen Zeilen haben aktuell keinen "
+            "bekannten Zugang in ZMM1000."
+        )
 
     st.download_button(
         "📥 Planungsdatei herunterladen",
