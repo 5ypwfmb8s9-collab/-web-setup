@@ -60,11 +60,12 @@ import io
 import math
 from pathlib import Path
 
-import numpy as np
 import openpyxl
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font, PatternFill
+
+import bestand_logik
 
 VORLAGE_DATEI = Path(__file__).resolve().parent / "dispo_dashboard" / "planung_vorlage.xlsx"
 
@@ -147,36 +148,13 @@ def _palettenspezifikation(lagerort: str, norm_nr) -> dict:
 # --- Kundenauftraege -> Rueckstaende / Planbar -------------------------------
 
 def _splitte_auftraege(positionen: pd.DataFrame, planungsdatum) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Kundenauftraege vom aeltesten Ladedatum bis zum Planungsdatum.
-
-    Anders als die "Fehlmenge" im Dashboard Dispo (die Bestand UND bereits
-    unterwegs befindliche Zugaenge als Deckung zaehlt) wird hier nur der
-    aktuell physisch vorhandene Bestand als "planbar" gewertet - Zugaenge
-    zaehlen fuer die Planung nicht, auch wenn sie laut ZMM1000 rechtzeitig
-    ankommen wuerden. Der Bestand wird je Artikel (ueber alle Werke/Kunden
-    hinweg, wie auch sonst in der Dispo-Logik) in Reihenfolge des
-    Ladedatums verbraucht.
-
-    WICHTIG: Reicht der verbleibende Bestand nur fuer einen TEIL einer
-    einzelnen Lieferplan-Position, wird genau dieser Teil eingeplant und
-    nur der Rest geht in die Rueckstaende - nicht die ganze Position. Eine
-    Position kann dadurch in BEIDEN Bloecken auftauchen, je mit ihrer
-    eigenen Teilmenge.
-    """
-    fenster = positionen[positionen["Ladedatum"] <= pd.Timestamp(planungsdatum)].copy()
-    fenster = fenster.sort_values("Ladedatum")
-    fehlmenge_nur_bestand = np.minimum(
-        fenster["Offene Menge"],
-        fenster["Kum. Bedarf Artikel"] - fenster["Bestand verfügbar"],
-    ).clip(lower=0)
-    fenster["Menge (Rückstand)"] = fehlmenge_nur_bestand
-    fenster["Menge (planbar)"] = fenster["Offene Menge"] - fehlmenge_nur_bestand
-
-    rueckstand = fenster[fenster["Menge (Rückstand)"] > 0].copy()
-    rueckstand["Offene Menge"] = rueckstand["Menge (Rückstand)"]
-    planbar = fenster[fenster["Menge (planbar)"] > 0].copy()
-    planbar["Offene Menge"] = planbar["Menge (planbar)"]
-    return rueckstand, planbar
+    """Kundenauftraege vom aeltesten Ladedatum bis zum Planungsdatum, dann
+    per bestand_logik.teile_nach_bestand() in (rueckstand, planbar)
+    aufgeteilt - dieselbe Funktion, die auch das Dashboard Dispo fuer
+    "Rückstand mit Bestand" nutzt (siehe dortige Doku fuer die genaue Regel
+    inkl. anteiliger Teilmengen)."""
+    fenster = positionen[positionen["Ladedatum"] <= pd.Timestamp(planungsdatum)]
+    return bestand_logik.teile_nach_bestand(fenster)
 
 
 def _gruppiere_je_abladestelle_artikel(df: pd.DataFrame) -> pd.DataFrame:

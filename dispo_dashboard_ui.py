@@ -23,6 +23,8 @@ import streamlit as st
 
 from dispo_dashboard import config, loaders, logic
 
+import bestand_logik
+
 ORDNER_DATEI = ".dispo_sap_ordner.txt"
 KONTAKTE_DATEI = ".dispo_kontakte.json"
 REICHWEITE_DATEI = ".dispo_reichweite.json"
@@ -68,6 +70,11 @@ ARTIKEL_SPALTEN = [
 LANGFRIST_SPALTEN = [
     "Norm-Nr", "VW-Nr", "Bestand verfügbar", "Zugänge unterwegs",
     "Reichweite (Tage)", "Nächster Zugang", "Empfohlene Bestellmenge", "Dringlichkeit",
+]
+
+RUECKSTAND_MIT_BESTAND_SPALTEN = [
+    "Norm-Nr", "VW-Nr", "Kunde", "Werk", "Abladestelle", "Ladedatum",
+    "Offene Menge (gesamt)", "Gedeckt durch Bestand", "Noch offen ohne Bestand", "Status",
 ]
 
 MENGEN_SPALTEN_EXPORT = ["Bestellmenge", "Geliefert", "Offene Menge", "Fehlmenge"]
@@ -830,6 +837,63 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
             st.success("Gespeichert.")
 
 
+# --- Reiter: Rückstand mit Bestand (nur physischer Bestand, wie Planung) ----
+
+def _rueckstand_mit_bestand(positionen: pd.DataFrame) -> pd.DataFrame:
+    """Von den aktuell als Rückstand gefuehrten Positionen (Ladedatum <
+    Stichtag, Status beginnt mit "Rückstand"): welche sind - nach derselben
+    Regel wie in der Planung Erstellung (nur physischer Bestand, keine
+    Zugaenge) - ganz oder teilweise JETZT schon durch Bestand gedeckt und
+    koennten sofort eingeplant/versendet werden, statt auf einen Zugang zu
+    warten."""
+    akut = positionen[positionen["Status"].str.startswith("Rückstand")]
+    if akut.empty:
+        return akut
+    _, planbar = bestand_logik.teile_nach_bestand(akut)
+    if planbar.empty:
+        return planbar
+
+    anzeige = planbar.copy()
+    anzeige["Offene Menge (gesamt)"] = akut.loc[anzeige.index, "Offene Menge"]
+    anzeige["Gedeckt durch Bestand"] = anzeige["Offene Menge"]
+    anzeige["Noch offen ohne Bestand"] = (
+        anzeige["Offene Menge (gesamt)"] - anzeige["Gedeckt durch Bestand"]
+    )
+    return anzeige.sort_values("Ladedatum")
+
+
+def _render_rueckstand_mit_bestand_tab(positionen: pd.DataFrame) -> None:
+    st.caption(
+        "Von den aktuellen Rückständen (Ladedatum vor dem Stichtag): welche "
+        "sind JETZT schon ganz oder teilweise durch physisch vorhandenen "
+        "Bestand gedeckt - unabhängig davon, ob ein Zugang unterwegs ist. "
+        "Dieselbe Regel wie im Reiter 'Planung Erstellung' ('Gedeckt durch "
+        "Bestand' = das, was dort eingeplant würde). Reicht der Bestand nur "
+        "für einen Teil, erscheint genau dieser Teil hier."
+    )
+    tabelle = _rueckstand_mit_bestand(positionen)
+    if tabelle.empty:
+        st.success(
+            "Kein aktueller Rückstand ist durch vorhandenen Bestand gedeckt - "
+            "alles Offene wartet wirklich auf Zugang/Nachschub."
+        )
+        return
+
+    tabelle = _suche(tabelle, ["Norm-Nr", "VW-Nr", "Kunde", "Abladestelle"], key="dispo_suche_rueckstand_bestand")
+    anzeige = tabelle[RUECKSTAND_MIT_BESTAND_SPALTEN].copy()
+    anzeige["Ladedatum"] = anzeige["Ladedatum"].dt.strftime("%d.%m.%Y")
+    for spalte in ["Offene Menge (gesamt)", "Gedeckt durch Bestand", "Noch offen ohne Bestand"]:
+        anzeige[spalte] = anzeige[spalte].apply(_fmt_menge)
+    st.dataframe(
+        anzeige,
+        hide_index=True,
+        use_container_width=True,
+        height=_tabellenhoehe(len(anzeige)),
+        column_config=_VW_NR_SPALTENKONFIG,
+        key="dispo_rueckstand_bestand_tabelle",
+    )
+
+
 # --- Reiter: Abbauplan -------------------------------------------------------
 
 def _abbauplan(positionen: pd.DataFrame) -> pd.DataFrame:
@@ -1104,14 +1168,16 @@ def render_dispo_tab() -> None:
             st.markdown(_SUBTAB_CSS, unsafe_allow_html=True)
             with st.container(key="dispo_subtabs"):
                 (
-                    reiter_rueckstand, reiter_deckung, reiter_abbau,
+                    reiter_rueckstand, reiter_rueckstand_bestand, reiter_deckung, reiter_abbau,
                     reiter_langfrist, reiter_export,
                 ) = st.tabs(
-                    ["Rückstand", "Deckung je Artikel", "Abbauplan",
+                    ["Rückstand", "Rückstand mit Bestand", "Deckung je Artikel", "Abbauplan",
                      "Langfristplanung", "Ausgabedatei"]
                 )
                 with reiter_rueckstand:
                     _render_rueckstand_tab(positionen, artikel)
+                with reiter_rueckstand_bestand:
+                    _render_rueckstand_mit_bestand_tab(positionen)
                 with reiter_deckung:
                     _render_deckung_tab(positionen, artikel)
                 with reiter_abbau:
