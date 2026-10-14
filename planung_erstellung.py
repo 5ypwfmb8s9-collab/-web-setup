@@ -160,10 +160,12 @@ def _splitte_auftraege(positionen: pd.DataFrame, planungsdatum) -> tuple[pd.Data
 def _gruppiere_je_abladestelle_artikel(df: pd.DataFrame) -> pd.DataFrame:
     """Mehrere Positionen derselben Abladestelle+Artikel im Zeitfenster zu
     einer Zeile zusammenfassen (fuer EINEN Kommissionier-/Palettenlauf)."""
-    gruppiert = (
-        df.groupby(["Abladestelle", "Norm-Nr"], as_index=False)
-        .agg(Menge=("Offene Menge", "sum"), Ladedatum=("Ladedatum", "min"))
-    )
+    aggregation = {"Menge": ("Offene Menge", "sum"), "Ladedatum": ("Ladedatum", "min")}
+    if "VW-Nr" in df.columns:
+        # Nur fuer die Bildschirm-Vorschau mitgefuehrt (nicht in der Excel-
+        # Vorlage genutzt) - je Norm-Nr immer derselbe Wert, "first" reicht.
+        aggregation["VW-Nr"] = ("VW-Nr", "first")
+    gruppiert = df.groupby(["Abladestelle", "Norm-Nr"], as_index=False).agg(**aggregation)
     return gruppiert.sort_values(["Abladestelle", "Norm-Nr"]).reset_index(drop=True)
 
 
@@ -366,11 +368,18 @@ def _ordne_zugaenge_zu(gruppiert: pd.DataFrame, zugang_warteschlangen: dict) -> 
     return gruppiert
 
 
-def _schreibe_rueckstaende(ws, rueckstand: pd.DataFrame, zugang_warteschlangen: dict) -> int:
-    """Schreibt die Rueckstaende in die Vorlage, gibt die Anzahl Zeilen mit
-    zugeordnetem Zugang zurueck (fuer die Kennzahlen-Anzeige)."""
+def _rueckstand_anzeige(rueckstand: pd.DataFrame, zugang_warteschlangen: dict) -> pd.DataFrame:
+    """Rueckstaende gruppiert + Zugang-Info zugeordnet - EINE Berechnung,
+    die sowohl ins Excel-Blatt "Rueckstaende" geschrieben als auch als
+    Bildschirm-Vorschau im Tab angezeigt wird (siehe render_planung_tab)."""
     gruppiert = _gruppiere_je_abladestelle_artikel(rueckstand)
-    gruppiert = _ordne_zugaenge_zu(gruppiert, zugang_warteschlangen)
+    return _ordne_zugaenge_zu(gruppiert, zugang_warteschlangen)
+
+
+def _schreibe_rueckstaende(ws, gruppiert: pd.DataFrame) -> int:
+    """Schreibt die (bereits gruppierten, mit Zugang-Info versehenen)
+    Rueckstaende in die Vorlage, gibt die Anzahl Zeilen mit zugeordnetem
+    Zugang zurueck (fuer die Kennzahlen-Anzeige)."""
     zeile_nr = ERSTE_DATENZEILE
     aktuelle_abladestelle = None
     rote_schrift = Font(size=15, color=ROT)
@@ -408,12 +417,13 @@ def _palettenspezifikation_abdeckung(planbar: pd.DataFrame) -> tuple[int, int]:
 
 def erstelle_planungsdatei(
     positionen: pd.DataFrame, zugang_vorbereitet: pd.DataFrame, planungsdatum
-) -> tuple[bytes, dict]:
+) -> tuple[bytes, dict, pd.DataFrame]:
     rueckstand, planbar = _splitte_auftraege(positionen, planungsdatum)
     planungszeilen, dhl_ups_zeilen = _baue_planung_und_versand(planbar)
     palette_gefunden, palette_gesamt = _palettenspezifikation_abdeckung(planbar)
     zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
     teilmengen = _teilmenge_kombis(rueckstand, planbar)
+    rueckstand_anzeige = _rueckstand_anzeige(rueckstand, zugang_warteschlangen)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
     _schreibe_zeilen(
@@ -424,8 +434,7 @@ def erstelle_planungsdatei(
         wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True,
         teilmenge_kombis=teilmengen,
     )
-    rueckstand_zeilen = len(_gruppiere_je_abladestelle_artikel(rueckstand))
-    rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand, zugang_warteschlangen)
+    rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand_anzeige)
     wb["Almanca"]["M2"] = pd.Timestamp(planungsdatum).strftime("%d.%m. VW")
 
     puffer = io.BytesIO()
@@ -434,14 +443,14 @@ def erstelle_planungsdatei(
 
     kennzahlen = {
         "rueckstand_artikel": rueckstand["Norm-Nr"].nunique(),
-        "rueckstand_zeilen": rueckstand_zeilen,
+        "rueckstand_zeilen": len(rueckstand_anzeige),
         "rueckstand_mit_zugang": rueckstand_mit_zugang,
         "planung_zeilen": len(planungszeilen),
         "dhl_ups_zeilen": len(dhl_ups_zeilen),
         "palette_spezifikation_gefunden": palette_gefunden,
         "palette_spezifikation_gesamt": palette_gesamt,
     }
-    return puffer.getvalue(), kennzahlen
+    return puffer.getvalue(), kennzahlen, rueckstand_anzeige
 
 
 # --- Streamlit-Oberflaeche ---------------------------------------------------
@@ -477,11 +486,12 @@ def render_planung_tab() -> None:
 
     if st.button("📋 Planung erstellen", key="planung_erstellen"):
         with st.spinner("Planung wird erstellt..."):
-            inhalt, kennzahlen = erstelle_planungsdatei(
+            inhalt, kennzahlen, rueckstand_anzeige = erstelle_planungsdatei(
                 daten["positionen"], daten.get("zugang"), planungsdatum
             )
         st.session_state["planung_datei"] = inhalt
         st.session_state["planung_kennzahlen"] = kennzahlen
+        st.session_state["planung_rueckstand_anzeige"] = rueckstand_anzeige
         st.session_state["planung_erstellt_fuer"] = planungsdatum
 
     kennzahlen = st.session_state.get("planung_kennzahlen")
@@ -525,4 +535,52 @@ def render_planung_tab() -> None:
         file_name=f"Planung_{pd.Timestamp(planungsdatum):%Y%m%d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="planung_download",
+    )
+
+    st.divider()
+    _render_rueckstand_vorschau(st.session_state.get("planung_rueckstand_anzeige"), planungsdatum)
+
+
+def _tabellenhoehe(anzahl_zeilen: int) -> int:
+    return 35 * max(anzahl_zeilen, 1) + 40
+
+
+def _render_rueckstand_vorschau(rueckstand_anzeige: pd.DataFrame | None, planungsdatum) -> None:
+    """Direkte Vorschau der Rückstände fuer das gewaehlte Planungsdatum -
+    ohne die Excel-Datei oeffnen zu muessen. Damit nichts "durchrutscht":
+    auch Artikel, die am heutigen Stichtag noch kein Rückstand sind, aber
+    bis zum Planungsdatum faellig werden, erscheinen hier (anders als
+    "Rückstand mit Bestand" im Dashboard Dispo, das auf den heutigen
+    Stichtag begrenzt ist)."""
+    st.markdown(f"**Rückstände bis {pd.Timestamp(planungsdatum):%d.%m.%Y}**")
+    if rueckstand_anzeige is None or rueckstand_anzeige.empty:
+        st.success(
+            "Keine Rückstände bis zu diesem Planungsdatum - alles ist durch "
+            "Bestand gedeckt."
+        )
+        return
+
+    anzeige = rueckstand_anzeige.copy()
+    suche = st.text_input(
+        "🔍 Suche (Norm-Nr / VW-Nr / Abladestelle)", key="planung_rueckstand_suche"
+    )
+    if suche:
+        treffer = pd.Series(False, index=anzeige.index)
+        for spalte in ["Norm-Nr", "VW-Nr", "Abladestelle"]:
+            if spalte in anzeige.columns:
+                treffer |= anzeige[spalte].astype(str).str.contains(suche, case=False, na=False)
+        anzeige = anzeige[treffer]
+
+    spalten = [s for s in ["Abladestelle", "Norm-Nr", "VW-Nr", "Menge", "Ladedatum", "Zugang Info"]
+               if s in anzeige.columns]
+    anzeige = anzeige[spalten].copy()
+    anzeige["Ladedatum"] = anzeige["Ladedatum"].dt.strftime("%d.%m.%Y")
+    anzeige["Menge"] = anzeige["Menge"].apply(lambda v: f"{v:,.0f}".replace(",", "."))
+    st.dataframe(
+        anzeige,
+        hide_index=True,
+        use_container_width=True,
+        height=_tabellenhoehe(len(anzeige)),
+        column_config={"VW-Nr": st.column_config.TextColumn(width=110)},
+        key="planung_rueckstand_tabelle",
     )
