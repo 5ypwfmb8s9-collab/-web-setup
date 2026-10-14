@@ -284,6 +284,16 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
     return planungszeilen, dhl_ups_zeilen
 
 
+def _teilmenge_kombis(rueckstand: pd.DataFrame, planbar: pd.DataFrame) -> set:
+    """(Abladestelle, Norm-Nr)-Kombinationen, die durch die Mengen-Aufteilung
+    SOWOHL eine planbare als auch eine Rueckstands-Teilmenge haben."""
+    if rueckstand.empty or planbar.empty:
+        return set()
+    in_rueckstand = set(zip(rueckstand["Abladestelle"], rueckstand["Norm-Nr"]))
+    in_planbar = set(zip(planbar["Abladestelle"], planbar["Norm-Nr"]))
+    return in_rueckstand & in_planbar
+
+
 def _baue_planung_und_versand(planbar: pd.DataFrame) -> tuple[list[dict], list[dict]]:
     """Komplette Planbar-Menge -> (Almanca-Zeilen, DHL/UPS-Zeilen), je
     Abladestelle gruppiert und sortiert, mit Mix-Paletten-Logik."""
@@ -307,7 +317,10 @@ def _baue_planung_und_versand(planbar: pd.DataFrame) -> tuple[list[dict], list[d
 
 # --- In die Vorlage schreiben -------------------------------------------
 
-def _schreibe_zeilen(ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_fuellung: bool) -> None:
+def _schreibe_zeilen(
+    ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_fuellung: bool,
+    teilmenge_kombis: set = frozenset(),
+) -> None:
     aktuelle_abladestelle = None
     zeile_nr = ERSTE_DATENZEILE
     for eintrag in zeilen:
@@ -328,6 +341,12 @@ def _schreibe_zeilen(ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_f
         if gruen_fuellung:
             for spalte in (3, 7, 9):
                 ws.cell(row=zeile_nr, column=spalte).fill = GRUEN_FUELLUNG
+        if (eintrag["Abladestelle"], eintrag["Norm-Nr"]) in teilmenge_kombis:
+            # Nur ein Teil der urspruenglich offenen Menge war durch Bestand
+            # gedeckt - der Rest steht (mit derselben Abladestelle/Artikel)
+            # zusaetzlich in den Rueckstaenden. Spalte Z (sonst ungenutzt im
+            # Normalfall einer vollstaendigen Position) markiert das.
+            ws.cell(row=zeile_nr, column=26, value="Teilmenge, Prüfen")
 
         zeile_nr += 1
 
@@ -416,10 +435,17 @@ def erstelle_planungsdatei(
     planungszeilen, dhl_ups_zeilen = _baue_planung_und_versand(planbar)
     palette_gefunden, palette_gesamt = _palettenspezifikation_abdeckung(planbar)
     zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
+    teilmengen = _teilmenge_kombis(rueckstand, planbar)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
-    _schreibe_zeilen(wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False)
-    _schreibe_zeilen(wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True)
+    _schreibe_zeilen(
+        wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False,
+        teilmenge_kombis=teilmengen,
+    )
+    _schreibe_zeilen(
+        wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True,
+        teilmenge_kombis=teilmengen,
+    )
     rueckstand_zeilen = len(_gruppiere_je_abladestelle_artikel(rueckstand))
     rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand, zugang_warteschlangen)
     wb["Almanca"]["M2"] = pd.Timestamp(planungsdatum).strftime("%d.%m. VW")
