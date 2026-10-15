@@ -11,7 +11,33 @@ echo Ein Log dieses Starts wird gespeichert in:
 echo %LOG%
 echo.
 
-echo [1/3] Pruefe Python...
+echo [1/4] Suche nach Updates...
+where git >nul 2>&1
+if errorlevel 1 (
+    echo Git ist nicht installiert - Update wird uebersprungen, es startet der
+    echo aktuell vorhandene Stand. Fuer automatische Updates bitte Git
+    echo installieren ^(https://git-scm.com/download/win^).
+    echo.
+) else (
+    if exist "%~dp0.git" (
+        git pull 1>>"%LOG%" 2>&1
+        if errorlevel 1 (
+            echo Update fehlgeschlagen ^(z. B. kein Internet oder lokale
+            echo Aenderungen^) - es startet der aktuell vorhandene Stand.
+            echo Details stehen in: %LOG%
+            echo.
+        ) else (
+            echo OK.
+            echo.
+        )
+    ) else (
+        echo Kein Git-Ordner gefunden - Update wird uebersprungen, es startet
+        echo der aktuell vorhandene Stand.
+        echo.
+    )
+)
+
+echo [2/4] Pruefe Python...
 python --version 1>>"%LOG%" 2>&1
 if errorlevel 1 (
     echo.
@@ -34,7 +60,7 @@ if not exist "%~dp0requirements.txt" (
     exit /b 1
 )
 
-echo [2/3] Installiere/aktualisiere benoetigte Pakete...
+echo [3/4] Installiere/aktualisiere benoetigte Pakete...
 echo ^(Beim allerersten Start kann das ein paar Minuten dauern.^)
 echo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
@@ -51,7 +77,7 @@ echo.
 echo OK.
 echo.
 
-echo [3/3] Starte das Programm - der Browser oeffnet sich gleich automatisch.
+echo [4/4] Starte das Programm - der Browser oeffnet sich gleich automatisch.
 echo Zum Beenden einfach dieses Fenster schliessen.
 echo ============================================
 echo.
