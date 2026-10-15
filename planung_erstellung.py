@@ -46,7 +46,10 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   versucht mit anderen Artikeln zu einer Mix-Palette zusammenzulegen
   (bis zur Lagen-Kapazitaet lt. Stammdaten: 10 bei Standard-Paletten,
   20 bei VWPAL), damit keine Palette mit nur bis zu 5 Stueck alleine
-  dasteht. Nicht unterzubringende Reste -> ebenfalls "DHL UPS".
+  dasteht. Nicht unterzubringende Reste -> ebenfalls "DHL UPS". Ein
+  zugeordneter Rest wird IMMER zur bestehenden Zeile desselben Artikels an
+  dieser Abladestelle addiert statt eine zweite Zeile zu erzeugen - pro
+  Artikel und Abladestelle gibt es in Almanca/DHL UPS nie zwei Zeilen.
 - Abholdatum (Planungsdatum) wird einmalig in Zelle M2 eingetragen.
 
 WICHTIG (erster Testaufbau): die Mix-Paletten-Logik ist eine Heuristik
@@ -196,8 +199,17 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
     """Gibt (planungszeilen, dhl_ups_zeilen) fuer eine Abladestelle zurueck.
     planungszeilen: Artikel mit ausreichend Packeinheiten fuer mind. eine
     volle Palette (Reste werden, wenn kombinierbar, einem Artikel der
-    Gruppe als Mix-Palette zugeschlagen - sonst zu DHL/UPS)."""
+    Gruppe als Mix-Palette zugeschlagen - sonst zu DHL/UPS).
+
+    WICHTIG: Pro Artikel gibt es je Abladestelle hoechstens EINE Zeile in
+    planungszeilen - nie zwei (z. B. "3 Paletten" + separat "6 KLT"
+    desselben Artikels). Hat ein Artikel an dieser Abladestelle schon eine
+    Zeile (volle Paletten oder ein zuvor zugeordneter Mix-Anteil), wird
+    jeder weitere Rest - ob alleinstehend oder mit einem ANDEREN Artikel zu
+    einer Mix-Palette kombiniert - dort draufgerechnet statt eine zweite
+    Zeile zu erzeugen."""
     planungszeilen: list[dict] = []
+    hauptzeile_je_artikel: dict = {}  # Norm-Nr -> deren Zeile in planungszeilen
     offene_reste: list[dict] = []  # Kandidaten fuer Mix-Palette
 
     for _, zeile in gruppe.iterrows():
@@ -213,12 +225,14 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
         volle_paletten, rest, spezifikation = _teile_in_paletten_und_rest(zeile, lagerort)
         if volle_paletten > 0:
             kapazitaet = int(spezifikation["anzahl_volle_palette"])
-            planungszeilen.append({
+            eintrag = {
                 "Norm-Nr": zeile["Norm-Nr"],
                 "Menge": volle_paletten * kapazitaet * zeile["Fuellmenge"],
                 "Menge_gerundet": zeile["Menge_gerundet"],
                 "anzahl_pro_lage": spezifikation["anzahl_pro_lage"],
-            })
+            }
+            planungszeilen.append(eintrag)
+            hauptzeile_je_artikel[zeile["Norm-Nr"]] = eintrag
         if rest > 0:
             # VWPAL: ein Rest von genau der Haelfte der Lagen-Kapazitaet
             # (z. B. 10 von 20) soll nicht alleine stehen - bevorzugt
@@ -250,16 +264,28 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
                 rest_liste.append(kandidat)
         offene_reste = rest_liste
 
-        if summe < MINDEST_PACKEINHEITEN_FUER_PALETTE or len(mix_artikel) == 1 and summe < MINDEST_PACKEINHEITEN_FUER_PALETTE:
+        if summe < MINDEST_PACKEINHEITEN_FUER_PALETTE:
             for artikel in mix_artikel:
                 dhl_ups_zeilen.append(artikel)
         else:
+            # Egal ob der Rest alleine stand oder mit einem anderen Artikel
+            # gemischt wurde: hat der Artikel an dieser Abladestelle schon
+            # eine Zeile (volle Paletten oder ein frueherer Mix-Anteil),
+            # wird hier draufgerechnet statt eine zweite Zeile fuer
+            # denselben Artikel zu schreiben - nie zwei Zeilen je Artikel.
             for artikel in mix_artikel:
-                planungszeilen.append({
-                    "Norm-Nr": artikel["Norm-Nr"], "Menge": artikel["Menge"],
-                    "Menge_gerundet": artikel["Menge_gerundet"],
-                    "anzahl_pro_lage": kapazitaet,
-                })
+                hauptzeile = hauptzeile_je_artikel.get(artikel["Norm-Nr"])
+                if hauptzeile is not None:
+                    hauptzeile["Menge"] += artikel["Menge"]
+                    hauptzeile["Menge_gerundet"] = True
+                else:
+                    eintrag = {
+                        "Norm-Nr": artikel["Norm-Nr"], "Menge": artikel["Menge"],
+                        "Menge_gerundet": artikel["Menge_gerundet"],
+                        "anzahl_pro_lage": kapazitaet,
+                    }
+                    planungszeilen.append(eintrag)
+                    hauptzeile_je_artikel[artikel["Norm-Nr"]] = eintrag
 
     return planungszeilen, dhl_ups_zeilen
 
