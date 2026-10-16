@@ -90,16 +90,18 @@ def test_pal_haelt_reale_mehrfach_ladungstraeger_wie_in_produktivdaten():
 RAW_HEADER = [f"col{i}" for i in range(19)]
 
 
-def _raw_row(plan_vl="GEVC62-1", pal="1*VWPAL", brutto=100, name="Empfaenger", lkw_vl=None):
+def _raw_row(plan_vl="GEVC62-1", pal="1*VWPAL", brutto=100, name="Empfaenger", lkw_vl=None,
+             abladestelle="Stelle", beladeinfo=None):
     row = [None] * 19
     row[ll.RAW_COL_ABHOLTAG] = "01.01.2026"
     row[ll.RAW_COL_EMPF_NAME] = name
     row[ll.RAW_COL_EMPF_ORT] = "Ort"
-    row[ll.RAW_COL_ABLADESTELLE] = "Stelle"
+    row[ll.RAW_COL_ABLADESTELLE] = abladestelle
     row[ll.RAW_COL_PLAN_VL] = plan_vl
     row[11] = lkw_vl  # Spalte L "LKW VL" - bewusst haeufig leer, darf nicht verwendet werden
     row[ll.RAW_COL_PAL_QUELLE] = pal
     row[ll.RAW_COL_BRUTTO] = brutto
+    row[ll.RAW_COL_BELADEINFO] = beladeinfo
     return row
 
 
@@ -141,10 +143,15 @@ def test_merge_verwendet_immer_die_festen_7_kernspalten_als_kopfzeile():
 
 
 def test_merge_bildet_zeilen_auf_7_spalten_ab():
+    # Zeilenlaenge ist 8: die 7 angezeigten Kernspalten (TRUCK_SHEET_HEADERS)
+    # plus 1 rein internes Element (roher Beladeinfo-Text, COL_BELADEINFO_RAW)
+    # fuer die Abladestelle-Anreicherung - write_source_sheet schneidet das
+    # 8. Element beim Schreiben des Echo-Blatts wieder ab.
     file1 = _make_source_workbook_bytes([_raw_row(name="A1", plan_vl="GEVC62-1", brutto=123.4)])
-    _, merged = ll.merge_source_files([file1])
+    header, merged = ll.merge_source_files([file1])
 
-    assert len(merged[0]) == 7
+    assert len(header) == 7
+    assert len(merged[0]) == 8
     assert merged[0][ll.COL_EMPF_NAME] == "A1"
     assert merged[0][ll.COL_PLAN_VL] == "GEVC62-1"
     assert merged[0][ll.COL_BRUTTO] == 123.4
@@ -171,15 +178,17 @@ def test_merge_ohne_dateien_wirft_fehler():
 # LKW-Gruppierung (nach Spalte "Plan VL" der bereits zusammengefuehrten Zeilen)
 # ---------------------------------------------------------------------------
 
-def _merged_row(plan_vl="GEVC62-1", pal="1*VWPAL", brutto=100, name="Empfaenger"):
-    row = [None] * 7
+def _merged_row(plan_vl="GEVC62-1", pal="1*VWPAL", brutto=100, name="Empfaenger",
+                 abladestelle="Stelle", beladeinfo=None):
+    row = [None] * 8
     row[ll.COL_ABHOLTAG] = "01.01.2026"
     row[ll.COL_EMPF_NAME] = name
     row[ll.COL_EMPF_ORT] = "Ort"
-    row[ll.COL_ABLADESTELLE] = "Stelle"
+    row[ll.COL_ABLADESTELLE] = abladestelle
     row[ll.COL_PLAN_VL] = plan_vl
     row[ll.COL_PAL_QUELLE] = pal
     row[ll.COL_BRUTTO] = brutto
+    row[ll.COL_BELADEINFO_RAW] = beladeinfo
     return row
 
 
@@ -217,6 +226,116 @@ def test_build_truck_groups_behandelt_suffix_als_eigenstaendige_kennung():
     ]
     groups = ll.build_truck_groups(rows)
     assert set(groups.keys()) == {"BOHDT978-1", "BOHDT978-2"}
+
+
+# ---------------------------------------------------------------------------
+# Beladeinfo: Abladestellen-Liste nur fuer die Anzeige anreichern
+# ---------------------------------------------------------------------------
+# Anfrage vom 16.10.: in der Beladeinfo-Spalte des Spediteurs stehen bei
+# konsolidierten Ladungen alle tatsaechlichen Abladestellen, kommagetrennt
+# ("Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr : ..."). Diese sollen
+# zusaetzlich in die Abladestelle-Spalte der LKW-Blaetter (nicht die anderen
+# Infos wie Lade Nr/Hinweis) uebernommen werden.
+
+def test_extract_abladestellen_einzelner_code_unveraendert():
+    text = " Abladesstelle(n) : D72 / KOD72 | Lade Nr :  |  |  | Hinweis : "
+    assert ll.extract_abladestellen_aus_beladeinfo(text) == "KOD72"
+
+
+def test_extract_abladestellen_mehrere_codes_kommagetrennt():
+    text = " Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : "
+    assert ll.extract_abladestellen_aus_beladeinfo(text) == "101U6, 106U6, 102U6"
+
+
+def test_extract_abladestellen_nur_die_liste_keine_anderen_infos():
+    text = " Abladesstelle(n) : U4 / 203S7,217S7,219S7 | Lade Nr : 4711 | X | Hinweis : Eilt "
+    ergebnis = ll.extract_abladestellen_aus_beladeinfo(text)
+    assert ergebnis == "203S7, 217S7, 219S7"
+    assert "Lade Nr" not in ergebnis
+    assert "Hinweis" not in ergebnis
+    assert "4711" not in ergebnis
+
+
+def test_extract_abladestellen_ohne_treffer_gibt_none():
+    assert ll.extract_abladestellen_aus_beladeinfo("irgendein anderer Text") is None
+    assert ll.extract_abladestellen_aus_beladeinfo(None) is None
+    assert ll.extract_abladestellen_aus_beladeinfo("") is None
+
+
+def test_build_truck_groups_reichert_abladestelle_anzeige_aus_beladeinfo_an():
+    rows = [
+        _merged_row(
+            plan_vl="LKW1", abladestelle="101U6",
+            beladeinfo=" Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : ",
+        ),
+    ]
+    groups = ll.build_truck_groups(rows)
+    entry = groups["LKW1"][0]
+    # Anzeige (LKW-Blatt) zeigt alle drei Abladestellen...
+    assert entry.abladestelle_anzeige == "101U6, 106U6, 102U6"
+    # ...aber die rohe Einzel-Abladestelle bleibt fuer den Planungsabgleich erhalten.
+    assert entry.abladestelle == "101U6"
+
+
+def test_build_truck_groups_ohne_beladeinfo_faellt_auf_abladestelle_zurueck():
+    rows = [_merged_row(plan_vl="LKW1", abladestelle="KOD72", beladeinfo=None)]
+    groups = ll.build_truck_groups(rows)
+    entry = groups["LKW1"][0]
+    assert entry.abladestelle_anzeige == "KOD72"
+    assert entry.abladestelle == "KOD72"
+
+
+def test_write_data_row_schreibt_angereicherte_abladestelle_in_lkw_blatt():
+    rows = [
+        _raw_row(
+            plan_vl="LKW1", name="A", abladestelle="101U6",
+            beladeinfo=" Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : ",
+        ),
+    ]
+    file1 = _make_source_workbook_bytes(rows)
+    result = ll.generate_workbook([file1])
+    ws = result.workbook["LKW LKW1"]
+    assert ws.cell(row=2, column=4).value == "101U6, 106U6, 102U6"
+
+
+def test_quellblatt_echo_bleibt_bei_roher_einzel_abladestelle_unveraendert():
+    # Das "Avis Lade Listen"-Echo-Blatt bildet unveraendert die Rohdaten ab
+    # (Spalte I) - die Anreicherung betrifft bewusst nur die LKW-Blaetter.
+    rows = [
+        _raw_row(
+            plan_vl="LKW1", name="A", abladestelle="101U6",
+            beladeinfo=" Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : ",
+        ),
+    ]
+    file1 = _make_source_workbook_bytes(rows)
+    result = ll.generate_workbook([file1])
+    echo_ws = result.workbook[ll.SOURCE_SHEET_NAME]
+    assert echo_ws.cell(row=2, column=ll.COL_ABLADESTELLE + 1).value == "101U6"
+    assert echo_ws.max_column == len(ll.TRUCK_SHEET_HEADERS)
+
+
+def test_planungsabgleich_matching_nutzt_weiterhin_rohe_einzel_abladestelle():
+    # Regressionstest: die Beladeinfo-Anreicherung darf den Planungsabgleich
+    # nicht beeinflussen - der dort erwartete Code ("101U6") muss weiterhin
+    # matchen, auch wenn die Beladeinfo mehrere Abladestellen auflistet.
+    avis_rows = [
+        _raw_row(
+            plan_vl="CZ2A", pal="2*VWPAL", brutto=10, name="A", abladestelle="101U6",
+            beladeinfo=" Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : ",
+        ),
+    ]
+    avis_file = _make_source_workbook_bytes(avis_rows)
+    planung_file = _make_planung_workbook_bytes([
+        ("101U6", 2, "VWPAL", None),
+    ])
+
+    result = ll.generate_workbook([avis_file], planung_file=planung_file)
+
+    ws = result.workbook[ll.PLANUNG_SHEET_NAME]
+    assert ws.cell(row=5, column=ll.PLANUNG_COL_LKW).value == "CZ2A"
+    assert result.planung.positions_gefuellt == 1
+    assert result.planung.positions_ohne_treffer == 0
+    assert result.planung.abweichungen == []
 
 
 # ---------------------------------------------------------------------------

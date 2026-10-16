@@ -204,6 +204,12 @@ def render_ladelisten_tab() -> None:
         "Lade eine oder mehrere Excel-Dateien mit dem Blatt "
         "**\"Avis Lade Listen\"** hoch. Die Verarbeitung startet automatisch."
     )
+    st.caption(
+        "Listet die Beladeinfo-Spalte des Spediteurs bei einer konsolidierten "
+        "Ladung mehrere Abladestellen auf (z. B. \"101U6,106U6,102U6\"), "
+        "werden alle in der Spalte \"Abladestelle\" der LKW-Blätter angezeigt "
+        "- nicht nur die eine aus der Abladestelle-Spalte der Quelldatei."
+    )
 
     uploaded_files = st.file_uploader(
         "Excel-Quelldateien",

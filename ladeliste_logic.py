@@ -43,6 +43,7 @@ RAW_COL_ABLADESTELLE = 8  # I
 RAW_COL_PLAN_VL = 10      # K ("Plan VL")
 RAW_COL_PAL_QUELLE = 13   # N
 RAW_COL_BRUTTO = 14       # O
+RAW_COL_BELADEINFO = 15   # P - Freitext des Spediteurs, siehe unten
 
 # Feste 7 Kernspalten, sowohl im zusammengefuehrten "Avis Lade Listen"-Blatt
 # als auch in jedem LKW-Blatt (0-basierte Indizes innerhalb dieser Spaltenliste).
@@ -63,10 +64,57 @@ COL_ABLADESTELLE = 3
 COL_PLAN_VL = 4
 COL_PAL_QUELLE = 5
 COL_BRUTTO = 6
+# 8. Element je Zeile, NICHT Teil der 7 angezeigten Kernspalten/TRUCK_SHEET_
+# HEADERS (write_source_sheet schneidet es wieder ab) - roher Beladeinfo-Text,
+# nur intern durchgereicht, um in build_truck_groups() die Abladestelle-
+# Anzeige anzureichern (siehe _anzeige_abladestelle).
+COL_BELADEINFO_RAW = 7
 
 PAL_TOKENS = ("VWPAL", "111444")
 
 PAL_PATTERN = re.compile(r"(\d+)\s*\*\s*(VWPAL|111444)(?![A-Za-z0-9])", re.IGNORECASE)
+
+# Freitext des Spediteurs in der Spalte "Beladeinfo", z. B.:
+#   " Abladesstelle(n) : 03A / 101U6,106U6,102U6 | Lade Nr :  |  |  | Hinweis : "
+# Bei einer konsolidierten Ladung (mehrere physische Abladestellen auf einem
+# LKW) listet dieses Feld ALLE tatsaechlichen Abladestellen durch Komma
+# getrennt auf - die Spalte "Abladestelle" (I) selbst enthaelt dann oft nur
+# die erste davon. "Abladesstelle" ist im Originaltext mit doppeltem "s"
+# geschrieben (Tippfehler des Spediteurs) - das Muster erkennt beide Schreib-
+# weisen. Es wird NUR die Liste zwischen "/" und dem folgenden "|" erfasst -
+# weder der vorangestellte Code (links vom "/") noch "Lade Nr"/"Hinweis".
+BELADEINFO_PATTERN = re.compile(
+    r"Ablades?stelle\(n\)\s*:\s*[^/]*/\s*([^|]*)\|", re.IGNORECASE
+)
+
+
+def extract_abladestellen_aus_beladeinfo(text: Any) -> Optional[str]:
+    """Extrahiert aus dem Beladeinfo-Freitext NUR die Liste der tatsaechlichen
+    Abladestellen (kommagetrennt, ohne Leerzeichen-Normalisierung je Code
+    ausser Trimmen) - None, wenn das erwartete Muster nicht gefunden wird."""
+    if text is None:
+        return None
+    m = BELADEINFO_PATTERN.search(str(text))
+    if not m:
+        return None
+    codes = [c.strip() for c in m.group(1).split(",") if c.strip()]
+    return ", ".join(codes) if codes else None
+
+
+def _anzeige_abladestelle(abladestelle_raw: Any, beladeinfo_raw: Any) -> Any:
+    """Abladestelle-Wert fuer die ANZEIGE (Quellblatt-Echo + LKW-Blaetter):
+    listet alle Abladestellen aus der Beladeinfo auf, falls dort welche
+    gefunden werden (auch wenn es nur eine einzelne ist - dann unveraendert
+    zur Rohspalte I), sonst Fallback auf die rohe Abladestelle-Spalte.
+
+    WICHTIG: Fuer den Planungsabgleich (Matching gegen die Planungsdatei,
+    _build_abladestelle_plan_vl_map/_collect_avis_actual) bleibt bewusst
+    weiterhin die einzelne rohe Abladestelle (TruckEntry.abladestelle)
+    massgeblich, NICHT dieser angereicherte Anzeige-Wert - die Avis-Zeile
+    liefert keine Aufteilung der Mengen je einzelner Abladestelle einer
+    konsolidierten Ladung, ein Aufsplitten der Mengen waere daher geraten."""
+    extrahiert = extract_abladestellen_aus_beladeinfo(beladeinfo_raw)
+    return extrahiert if extrahiert else abladestelle_raw
 
 # Feste Spaltenbreiten je Blatt (in "pt", wie in der Spezifikation angegeben)
 COLUMN_WIDTHS_PT = {
@@ -231,7 +279,11 @@ def read_source_rows(file: Any, sheet_name: str = SOURCE_SHEET_NAME) -> List[Lis
     """Liest Datenzeilen aus dem angegebenen Blatt einer Rohdatei und bildet sie
     direkt auf die 7 Kernspalten ab (Abholtag, Empfaenger Name, Empfaenger Ort,
     Abladestelle, Plan VL, PAL, Brutto). Die PAL-Spalte bleibt dabei unbearbeitet
-    (roher Text aus Spalte N).
+    (roher Text aus Spalte N). Zusaetzlich (8. Element, COL_BELADEINFO_RAW) wird
+    der rohe Beladeinfo-Text (Spalte P) durchgereicht - nur intern genutzt, um
+    in build_truck_groups() die Abladestelle-Anzeige anzureichern, siehe
+    _anzeige_abladestelle(); kein eigener Bestandteil der 7 angezeigten Spalten
+    (write_source_sheet schneidet es wieder ab).
 
     `file` kann ein Pfad, ein Datei-Objekt oder ein BytesIO sein (alles, was
     openpyxl.load_workbook akzeptiert).
@@ -261,6 +313,7 @@ def read_source_rows(file: Any, sheet_name: str = SOURCE_SHEET_NAME) -> List[Lis
             _get(row, RAW_COL_PLAN_VL),
             _get(row, RAW_COL_PAL_QUELLE),
             _get(row, RAW_COL_BRUTTO),
+            _get(row, RAW_COL_BELADEINFO),
         ]
         data.append(mapped)
     wb.close()
@@ -285,12 +338,15 @@ def merge_source_files(files: Sequence[Any]) -> Tuple[List[Any], List[List[Any]]
 
 
 def write_source_sheet(wb: Workbook, header: Sequence[Any], rows: Sequence[Sequence[Any]]) -> Worksheet:
-    """Schreibt das zusammengefuehrte Ergebnis unveraendert als Quellblatt."""
+    """Schreibt das zusammengefuehrte Ergebnis unveraendert als Quellblatt -
+    nur die 7 Kernspalten (header-Laenge); ein eventuelles 8. Element je
+    Zeile (roher Beladeinfo-Text, siehe read_source_rows) ist rein intern
+    und wird hier bewusst nicht mit ausgegeben."""
     ws = wb.create_sheet(SOURCE_SHEET_NAME)
     if header:
         ws.append(list(header))
     for row in rows:
-        ws.append(list(row))
+        ws.append(list(row)[:len(header)])
     return ws
 
 
@@ -308,6 +364,10 @@ class TruckEntry:
     pal: str
     brutto: Optional[float]
     pal_raw: Any
+    # Angereicherte Abladestelle NUR fuer die Anzeige (LKW-Blatt Spalte D),
+    # siehe _anzeige_abladestelle. Fuer den Planungsabgleich bleibt das Feld
+    # "abladestelle" oben (roh, einzelner Code) massgeblich.
+    abladestelle_anzeige: Any = None
 
 
 @dataclass
@@ -342,6 +402,9 @@ def build_truck_groups(rows: Sequence[Sequence[Any]]) -> "OrderedDict[str, List[
             pal=process_pal(_get(row, COL_PAL_QUELLE)),
             brutto=to_number(_get(row, COL_BRUTTO)),
             pal_raw=_get(row, COL_PAL_QUELLE),
+            abladestelle_anzeige=_anzeige_abladestelle(
+                _get(row, COL_ABLADESTELLE), _get(row, COL_BELADEINFO_RAW)
+            ),
         )
         groups.setdefault(plan_vl, []).append(entry)
     return groups
@@ -425,7 +488,7 @@ def _write_data_row(ws: Worksheet, row_idx: int, entry: TruckEntry) -> None:
     ws.cell(row=row_idx, column=1, value=entry.abholtag)
     ws.cell(row=row_idx, column=2, value=entry.empf_name)
     ws.cell(row=row_idx, column=3, value=entry.empf_ort)
-    ws.cell(row=row_idx, column=4, value=entry.abladestelle)
+    ws.cell(row=row_idx, column=4, value=entry.abladestelle_anzeige)
     ws.cell(row=row_idx, column=5, value=entry.plan_vl)
     ws.cell(row=row_idx, column=6, value=entry.pal if entry.pal else None)
     ws.cell(row=row_idx, column=7, value=entry.brutto)
