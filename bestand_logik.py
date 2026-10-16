@@ -115,12 +115,15 @@ def nutzbarer_bestand_je_artikel(bestand_je_charge: pd.DataFrame, bestand_verfue
 
 
 def artikel_mit_lagerort_hinweis(bestand_je_charge: pd.DataFrame, bestand_verfuegbar_arten) -> set:
-    """Norm-Nr-Menge, bei denen mindestens eine Charge an einem
-    HINWEIS_LAGERORTE-Lagerort (z. B. MGBEKLEYEN) tatsaechlich zur
-    nutzbaren Menge beitraegt (nach Fuellmengen-Abrundung je Charge > 0).
-    Diese Artikel werden normal mitgezaehlt/eingeplant wie jeder andere -
-    nur als Hinweis markiert (siehe planung_erstellung._schreibe_zeilen,
-    Spalte L "Lagerauftrag")."""
+    """Norm-Nr-Menge, bei denen die GESAMTE nutzbare Menge (nach Fuellmengen-
+    Abrundung je Charge) ausschliesslich aus HINWEIS_LAGERORTE-Lagerorten
+    (z. B. MGBEKLEYEN - neue Ware, noch nicht ins Regal eingeraeumt) stammt,
+    OHNE jeglichen normalen Bestand an anderen Lagerorten. Gibt es daneben
+    auch normalen (nicht-MGBEKLEYEN) nutzbaren Bestand fuer denselben
+    Artikel, wird NICHT markiert - der Hinweis soll nur erscheinen, wenn
+    wirklich AUSSCHLIESSLICH neue, noch nicht eingelagerte Ware zur
+    Verfuegung steht (siehe Anfrage vom 16.10.: "soll nur da stehen, wenn
+    da nur MGBEKLEYEN ist ohne normalen Stock")."""
     if bestand_je_charge is None or bestand_je_charge.empty:
         return set()
     verwendbar = bestand_je_charge[
@@ -131,15 +134,20 @@ def artikel_mit_lagerort_hinweis(bestand_je_charge: pd.DataFrame, bestand_verfue
         return set()
     je_charge = verwendbar.groupby(["Norm-Nr", "Charge", "Lagerort"])["Menge"].sum()
 
-    ergebnis: set = set()
+    normal_je_artikel: dict = {}
+    hinweis_je_artikel: dict = {}
     for (norm_nr, _charge, lagerort), menge in je_charge.items():
-        if lagerort not in HINWEIS_LAGERORTE:
-            continue
         f = fuellmenge(norm_nr)
         nutzbar = (menge // f) * f if f else 0
-        if nutzbar > 0:
-            ergebnis.add(norm_nr)
-    return ergebnis
+        if nutzbar <= 0:
+            continue
+        ziel = hinweis_je_artikel if lagerort in HINWEIS_LAGERORTE else normal_je_artikel
+        ziel[norm_nr] = ziel.get(norm_nr, 0) + nutzbar
+
+    return {
+        norm_nr for norm_nr, menge in hinweis_je_artikel.items()
+        if menge > 0 and normal_je_artikel.get(norm_nr, 0) == 0
+    }
 
 
 def teile_nach_bestand(
