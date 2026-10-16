@@ -24,6 +24,34 @@ BEDARF_SPALTEN = {
     "Açık Teyit": "Zugewiesen offen",
 }
 
+# Englische SAP-Sprache (Kollege): gleiche Datenquelle, andere Spaltennamen.
+# Mit echten, zeitgleich gezogenen Exporten beider Sprachen feldweise verglichen
+# (16.10., >500 identische Zeilen über Malzeme+Ladedatum+Menge+Teslimat yeri
+# gematcht) - jedes Feld unten stimmt exakt. ABSICHTLICH NICHT enthalten, weil
+# im englischen Export kein Gegenstück gefunden wurde (gesamte Spaltenliste
+# geprüft, auch Zeile-für-Zeile gegen den türkischen Export verglichen):
+#   - "Muhatap tanımı"/Werk (Kundenwerk-Kurzcode, z. B. "LD"/"14"/"IN") - in
+#     loaders.lade_bedarf() bei englischem Format auf "" gesetzt.
+#   - "Termin satır no."/Einteilung (Lieferplan-Zeilennummer) - in
+#     loaders.lade_bedarf() bei englischem Format je Lieferplan nach
+#     Ladedatum sortiert durchnummeriert (nur Sortier-Hilfsfeld, keine echte
+#     SAP-Nummer).
+BEDARF_SPALTEN_EN = {
+    "Name 1": "Kunde",
+    "Ship-to Party": "Warenempfänger",
+    "Customer": "2er-Nr",
+    "Unloading Point": "Abladestelle",
+    "SD Document": "Lieferplan",
+    "Material": "Norm-Nr",
+    "Customer Material": "Kundenmaterial",
+    "Material DetailedDes": "Kurztext",
+    "Loading Date": "Ladedatum",
+    "Req. Delivery Date": "Wunschtermin",
+    "Order Quantity": "Bestellmenge",
+    "Delivered Qty": "Geliefert",
+    "Confirmed Quantity": "Zugewiesen offen",
+}
+
 # ---------------------------------------------------------------------------
 # Datei 2: Bestand – EWM-Bestandsliste je Charge / Lagerplatz
 # ---------------------------------------------------------------------------
@@ -36,6 +64,21 @@ BESTAND_SPALTEN = {
     "Depo adresi": "Lagerort",
     "Parti": "Charge",
     "Mal giriş tarihi": "WE-Datum",
+}
+
+# Englische SAP-Sprache - mit echten, zeitgleichen Exporten gegengeprüft
+# (16.10., >5.700 identische Zeilen über Ürün+Parti+Miktar gematcht, alle
+# Felder stimmen exakt ueberein inkl. der Code-Werte wie "F2"/"OUT1", die
+# sprachunabhaengige SAP-Standardcodes sind).
+BESTAND_SPALTEN_EN = {
+    "Product": "Norm-Nr",
+    "Product Description": "Kurztext",
+    "Quantity": "Menge",
+    "Stock Type": "Bestandsart",
+    "Storage Type": "Lagertyp",
+    "Storage Bin": "Lagerort",
+    "Batch": "Charge",
+    "Goods Receipt Date": "WE-Datum",
 }
 
 # Bestandsarten, die als verfügbar gerechnet werden (Reihenfolge = Spalten im Report)
@@ -62,6 +105,22 @@ ZUGANG_SPALTEN = {
     "Malzeme": "Norm-Nr",
     "Plnln.nakliye sonu": "Geplante Ankunft",  # geplantes Ankunftsdatum bei uns
     "Teslimat miktarı": "Menge",
+}
+
+# Englische SAP-Sprache - mit echten, zeitgleichen Exporten gegengeprüft
+# (16.10., 538 identische Zeilen über Referans+Malzeme+Teslimat miktarı
+# gematcht, alle Felder stimmen exakt ueberein). Achtung: "Ad 1"/Spediteur
+# ist hier der tatsaechliche Name des Spediteurs ("Name 1"), NICHT die
+# numerische "Service Agent"-Kennziffer.
+ZUGANG_SPALTEN_EN = {
+    "Shipment Number": "Transport",
+    "Reference": "Referenz",
+    "Name 1": "Spediteur",
+    "Delivery": "Lieferung",
+    "Reference Document": "Referenzbeleg",
+    "Material": "Norm-Nr",
+    "Planned shipment end": "Geplante Ankunft",
+    "Delivery Quantity": "Menge",
 }
 
 # ---------------------------------------------------------------------------

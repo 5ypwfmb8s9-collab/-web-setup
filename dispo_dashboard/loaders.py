@@ -27,6 +27,16 @@ def _pruefe(df, spalten, name):
         raise ValueError(f"{name}: im Export fehlen Spalten {fehlend}")
 
 
+def _spalten_variante(df, varianten, name):
+    """Welche Spalten-Variante (z. B. tuerkisch vs. englisch) zu den
+    tatsaechlichen Datei-Spalten passt - erste passende gewinnt."""
+    for spalten in varianten:
+        if set(spalten) <= set(df.columns):
+            return spalten
+    erwartet = " / ".join(str(sorted(v)) for v in varianten)
+    raise ValueError(f"{name}: im Export fehlen Spalten (erwarte eine dieser Varianten: {erwartet})")
+
+
 def stichtag_aus_dateiname(pfad):
     m = re.search(r"(\d{8})_\d{6}", str(pfad))
     return datetime.strptime(m.group(1), "%Y%m%d").date() if m else date.today()
@@ -67,8 +77,11 @@ def dateityp(pfad):
         if set(config.STOCKREPORT_SPALTEN) <= set(kopf.columns):
             return "stockreport"
     kopf = pd.read_excel(xl, nrows=0)
-    for typ, spalten in [("bedarf", config.BEDARF_SPALTEN), ("bestand", config.BESTAND_SPALTEN),
-                         ("zugang", config.ZUGANG_SPALTEN)]:
+    for typ, spalten in [
+        ("bedarf", config.BEDARF_SPALTEN), ("bedarf", config.BEDARF_SPALTEN_EN),
+        ("bestand", config.BESTAND_SPALTEN), ("bestand", config.BESTAND_SPALTEN_EN),
+        ("zugang", config.ZUGANG_SPALTEN), ("zugang", config.ZUGANG_SPALTEN_EN),
+    ]:
         if set(spalten) <= set(kopf.columns):
             return typ
     return None
@@ -92,21 +105,32 @@ def neueste_dateien(ordner):
 
 def lade_bedarf(pfad):
     roh = pd.read_excel(pfad)
-    _pruefe(roh, config.BEDARF_SPALTEN, "Bedarf")
-    df = roh[list(config.BEDARF_SPALTEN)].rename(columns=config.BEDARF_SPALTEN).copy()
+    spalten = _spalten_variante(roh, [config.BEDARF_SPALTEN, config.BEDARF_SPALTEN_EN], "Bedarf")
+    df = roh[list(spalten)].rename(columns=spalten).copy()
+    # Englisches SAP-Layout hat kein Gegenstueck fuer Werk/Einteilung (siehe
+    # config.BEDARF_SPALTEN_EN) - Werk bleibt leer, Einteilung wird unten
+    # als Sortier-Hilfsfeld je Lieferplan nach Ladedatum durchnummeriert.
+    einteilung_synthetisch = "Einteilung" not in df.columns
+    if "Werk" not in df.columns:
+        df["Werk"] = ""
+    if einteilung_synthetisch:
+        df["Einteilung"] = 0
     df["Norm-Nr"] = df["Norm-Nr"].map(materialnr)
     for c in ["Ladedatum", "Wunschtermin"]:
         df[c] = pd.to_datetime(df[c])
     for c in ["Werk", "Abladestelle", "Kundenmaterial", "Kurztext", "Kunde"]:
         df[c] = df[c].fillna("").astype(str)
+    if einteilung_synthetisch:
+        df = df.sort_values(["Lieferplan", "Ladedatum"])
+        df["Einteilung"] = df.groupby("Lieferplan").cumcount() + 1
     return df.sort_values(["Norm-Nr", "Ladedatum", "Wunschtermin", "Lieferplan", "Einteilung"]).reset_index(drop=True)
 
 
 def lade_zugang(pfad):
     """Zugänge je Transport / Lieferung / Artikel (Chargen zusammengefasst, Nullzeilen entfernt)."""
     roh = pd.read_excel(pfad)
-    _pruefe(roh, config.ZUGANG_SPALTEN, "Zugang")
-    df = roh[list(config.ZUGANG_SPALTEN)].rename(columns=config.ZUGANG_SPALTEN).copy()
+    spalten = _spalten_variante(roh, [config.ZUGANG_SPALTEN, config.ZUGANG_SPALTEN_EN], "Zugang")
+    df = roh[list(spalten)].rename(columns=spalten).copy()
     df["Norm-Nr"] = df["Norm-Nr"].map(materialnr)
     df["Geplante Ankunft"] = pd.to_datetime(df["Geplante Ankunft"])
     for c in ["Referenz", "Spediteur"]:
@@ -159,8 +183,8 @@ def lade_stockreport(pfad):
 def lade_bestand(pfad):
     """Gibt (Positionen je Charge, Summen je Artikel) zurück."""
     roh = pd.read_excel(pfad)
-    _pruefe(roh, config.BESTAND_SPALTEN, "Bestand")
-    df = roh[list(config.BESTAND_SPALTEN)].rename(columns=config.BESTAND_SPALTEN).copy()
+    spalten = _spalten_variante(roh, [config.BESTAND_SPALTEN, config.BESTAND_SPALTEN_EN], "Bestand")
+    df = roh[list(spalten)].rename(columns=spalten).copy()
     df = df[df["Norm-Nr"].notna()]               # Summenzeile aus SAP entfernen
     df["Norm-Nr"] = df["Norm-Nr"].map(materialnr)
     df["Bestandsart"] = df["Bestandsart"].fillna("").astype(str).str.strip()
