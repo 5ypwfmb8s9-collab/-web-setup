@@ -46,6 +46,14 @@ VORLAGE_DATEI = Path(__file__).resolve().parent / "dispo_dashboard" / "planung_v
 # stellen statt zu raten.
 AUSGESCHLOSSENE_LAGERORTE = {"OUT1"}
 
+# Lagerorte, deren Bestand ZWAR normal mitgezaehlt/eingeplant wird (anders
+# als AUSGESCHLOSSENE_LAGERORTE), aber als Hinweis markiert werden soll, weil
+# er nicht sofort entnehmbar ist. MGBEKLEYEN = Bestandsart F1 ("Giriş Stoğu
+# (Çıkış yapılamaz)" = Wareneingang, Entnahme noch nicht moeglich) - mit
+# echten Daten vom 16.10. geprueft: aller F1-Bestand liegt ausschliesslich
+# an diesem Lagerort.
+HINWEIS_LAGERORTE = {"MGBEKLEYEN"}
+
 
 def lade_fuellmenge_je_artikel() -> dict:
     """Füllmenge je Norm-Nr (Planung-Vorlage, Blatt "Almanca Hilfsdaten",
@@ -103,6 +111,34 @@ def nutzbarer_bestand_je_artikel(bestand_je_charge: pd.DataFrame, bestand_verfue
         f = fuellmenge(norm_nr)
         nutzbar = (menge // f) * f if f else 0
         ergebnis[norm_nr] = ergebnis.get(norm_nr, 0) + nutzbar
+    return ergebnis
+
+
+def artikel_mit_lagerort_hinweis(bestand_je_charge: pd.DataFrame, bestand_verfuegbar_arten) -> set:
+    """Norm-Nr-Menge, bei denen mindestens eine Charge an einem
+    HINWEIS_LAGERORTE-Lagerort (z. B. MGBEKLEYEN) tatsaechlich zur
+    nutzbaren Menge beitraegt (nach Fuellmengen-Abrundung je Charge > 0).
+    Diese Artikel werden normal mitgezaehlt/eingeplant wie jeder andere -
+    nur als Hinweis markiert (siehe planung_erstellung._schreibe_zeilen,
+    Spalte L "Lagerauftrag")."""
+    if bestand_je_charge is None or bestand_je_charge.empty:
+        return set()
+    verwendbar = bestand_je_charge[
+        bestand_je_charge["Bestandsart"].isin(list(bestand_verfuegbar_arten))
+        & ~bestand_je_charge["Lagerort"].isin(AUSGESCHLOSSENE_LAGERORTE)
+    ]
+    if verwendbar.empty:
+        return set()
+    je_charge = verwendbar.groupby(["Norm-Nr", "Charge", "Lagerort"])["Menge"].sum()
+
+    ergebnis: set = set()
+    for (norm_nr, _charge, lagerort), menge in je_charge.items():
+        if lagerort not in HINWEIS_LAGERORTE:
+            continue
+        f = fuellmenge(norm_nr)
+        nutzbar = (menge // f) * f if f else 0
+        if nutzbar > 0:
+            ergebnis.add(norm_nr)
     return ergebnis
 
 

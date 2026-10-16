@@ -51,6 +51,11 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   dieser Abladestelle addiert statt eine zweite Zeile zu erzeugen - pro
   Artikel und Abladestelle gibt es in Almanca/DHL UPS nie zwei Zeilen.
 - Abholdatum (Planungsdatum) wird einmalig in Zelle M2 eingetragen.
+- Liegt ein Teil des genutzten Bestands eines Artikels am Lagerort
+  MGBEKLEYEN (Wareneingang, Entnahme noch nicht moeglich), wird er trotzdem
+  ganz normal mitgezaehlt und eingeplant (anders als OUT1) - nur zur Info
+  wird "MGBEKLEYEN" in Spalte L "Lagerauftrag" der betroffenen Zeile(n) in
+  Almanca/DHL UPS eingetragen.
 
 WICHTIG (erster Testaufbau): die Mix-Paletten-Logik ist eine Heuristik
 (groesste Reste zuerst kombinieren) - bei echten Tagesdaten bitte pruefen,
@@ -315,7 +320,7 @@ def _baue_planung_und_versand(planbar: pd.DataFrame) -> tuple[list[dict], list[d
 
 def _schreibe_zeilen(
     ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_fuellung: bool,
-    teilmenge_kombis: set = frozenset(),
+    teilmenge_kombis: set = frozenset(), hinweis_artikel: set = frozenset(),
 ) -> None:
     aktuelle_abladestelle = None
     zeile_nr = ERSTE_DATENZEILE
@@ -343,6 +348,11 @@ def _schreibe_zeilen(
             # zusaetzlich in den Rueckstaenden. Spalte Z (sonst ungenutzt im
             # Normalfall einer vollstaendigen Position) markiert das.
             ws.cell(row=zeile_nr, column=26, value="Teilmenge, Prüfen")
+        if eintrag["Norm-Nr"] in hinweis_artikel:
+            # Ein Teil des genutzten Bestands liegt am Lagerort MGBEKLEYEN
+            # (Wareneingang, Entnahme noch nicht moeglich) - wird normal
+            # mitgezaehlt/eingeplant, nur als Hinweis in "Lagerauftrag" (L).
+            ws.cell(row=zeile_nr, column=12, value="MGBEKLEYEN")
 
         zeile_nr += 1
 
@@ -441,15 +451,16 @@ def erstelle_planungsdatei(
     zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
     teilmengen = _teilmenge_kombis(rueckstand, planbar)
     rueckstand_anzeige = _rueckstand_anzeige(rueckstand, zugang_warteschlangen)
+    hinweis_artikel = bestand_logik.artikel_mit_lagerort_hinweis(bestand_je_charge, config.BESTAND_VERFUEGBAR)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
     _schreibe_zeilen(
         wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False,
-        teilmenge_kombis=teilmengen,
+        teilmenge_kombis=teilmengen, hinweis_artikel=hinweis_artikel,
     )
     _schreibe_zeilen(
         wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True,
-        teilmenge_kombis=teilmengen,
+        teilmenge_kombis=teilmengen, hinweis_artikel=hinweis_artikel,
     )
     rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand_anzeige)
     wb["Almanca"]["M2"] = pd.Timestamp(planungsdatum).strftime("%d.%m. VW")
@@ -485,6 +496,9 @@ def render_planung_tab() -> None:
         "Bestand deckt - je Charge/Parti-Nr einzeln auf volle Füllmengen "
         "abgerundet (keine Mischung verschiedener Chargen in einer "
         "Füllmenge), ohne Lagerort OUT1 (bereits für Versand bereitgestellt)."
+        " Bestand am Lagerort MGBEKLEYEN (Wareneingang, Entnahme noch nicht "
+        "möglich) wird normal mitgezählt/eingeplant, aber zur Info mit "
+        "\"MGBEKLEYEN\" in Spalte L markiert."
         " Unterwegs befindliche Zugänge zählen hier nicht als verfügbar "
         "(anders als die Fehlmenge im Dashboard Dispo) und werden "
         "stattdessen als Info (Referenz/NRI, Ankunftsdatum, Menge) in die "
