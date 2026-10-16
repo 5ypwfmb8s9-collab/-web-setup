@@ -407,6 +407,7 @@ def _lade_und_berechne(ordner: str) -> dict:
         "positionen": positionen,
         "artikel": artikel,
         "zugang": zugang_vorbereitet,
+        "bestand_je_charge": bestand_je_charge,
         "datenstand": datenstand,
         "scheindeckung": _scheindeckung(positionen, bestand_je_charge, stichtag),
     }
@@ -839,17 +840,18 @@ def _render_deckung_tab(positionen: pd.DataFrame, artikel: pd.DataFrame) -> None
 
 # --- Reiter: Rückstand mit Bestand (nur physischer Bestand, wie Planung) ----
 
-def _rueckstand_mit_bestand(positionen: pd.DataFrame) -> pd.DataFrame:
+def _rueckstand_mit_bestand(positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame) -> pd.DataFrame:
     """Von den aktuell als Rückstand gefuehrten Positionen (Ladedatum <
     Stichtag, Status beginnt mit "Rückstand"): welche sind - nach derselben
-    Regel wie in der Planung Erstellung (nur physischer Bestand, keine
-    Zugaenge) - ganz oder teilweise JETZT schon durch Bestand gedeckt und
-    koennten sofort eingeplant/versendet werden, statt auf einen Zugang zu
-    warten."""
+    Regel wie in der Planung Erstellung (nur physischer Bestand, je Charge/
+    Parti-Nr auf volle Fuellmengen abgerundet, keine Zugaenge) - ganz oder
+    teilweise JETZT schon durch Bestand gedeckt und koennten sofort
+    eingeplant/versendet werden, statt auf einen Zugang zu warten."""
     akut = positionen[positionen["Status"].str.startswith("Rückstand")]
     if akut.empty:
         return akut
-    _, planbar = bestand_logik.teile_nach_bestand(akut)
+    nutzbar = bestand_logik.nutzbarer_bestand_je_artikel(bestand_je_charge, config.BESTAND_VERFUEGBAR)
+    _, planbar = bestand_logik.teile_nach_bestand(akut, nutzbar)
     if planbar.empty:
         return planbar
 
@@ -862,16 +864,19 @@ def _rueckstand_mit_bestand(positionen: pd.DataFrame) -> pd.DataFrame:
     return anzeige.sort_values("Ladedatum")
 
 
-def _render_rueckstand_mit_bestand_tab(positionen: pd.DataFrame) -> None:
+def _render_rueckstand_mit_bestand_tab(positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame) -> None:
     st.caption(
         "Von den aktuellen Rückständen (Ladedatum vor dem Stichtag): welche "
         "sind JETZT schon ganz oder teilweise durch physisch vorhandenen "
         "Bestand gedeckt - unabhängig davon, ob ein Zugang unterwegs ist. "
-        "Dieselbe Regel wie im Reiter 'Planung Erstellung' ('Gedeckt durch "
-        "Bestand' = das, was dort eingeplant würde). Reicht der Bestand nur "
-        "für einen Teil, erscheint genau dieser Teil hier."
+        "Je Charge/Parti-Nr einzeln auf volle Füllmengen abgerundet (keine "
+        "Mischung verschiedener Chargen), ohne Lagerort OUT1 (bereits für "
+        "Versand bereitgestellt). Dieselbe Regel wie im Reiter 'Planung "
+        "Erstellung' ('Gedeckt durch Bestand' = das, was dort eingeplant "
+        "würde). Reicht der Bestand nur für einen Teil, erscheint genau "
+        "dieser Teil hier."
     )
-    tabelle = _rueckstand_mit_bestand(positionen)
+    tabelle = _rueckstand_mit_bestand(positionen, bestand_je_charge)
     if tabelle.empty:
         st.success(
             "Kein aktueller Rückstand ist durch vorhandenen Bestand gedeckt - "
@@ -1177,7 +1182,7 @@ def render_dispo_tab() -> None:
                 with reiter_rueckstand:
                     _render_rueckstand_tab(positionen, artikel)
                 with reiter_rueckstand_bestand:
-                    _render_rueckstand_mit_bestand_tab(positionen)
+                    _render_rueckstand_mit_bestand_tab(positionen, daten.get("bestand_je_charge"))
                 with reiter_deckung:
                     _render_deckung_tab(positionen, artikel)
                 with reiter_abbau:

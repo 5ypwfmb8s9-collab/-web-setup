@@ -69,6 +69,7 @@ import streamlit as st
 from openpyxl.styles import Font, PatternFill
 
 import bestand_logik
+from dispo_dashboard import config
 
 VORLAGE_DATEI = Path(__file__).resolve().parent / "dispo_dashboard" / "planung_vorlage.xlsx"
 
@@ -79,27 +80,9 @@ MINDEST_PACKEINHEITEN_FUER_PALETTE = 5  # darunter: einzeln nicht paletten-/vers
 
 
 # --- Referenzdaten aus der Vorlage (Füllmenge, Palettentyp) -----------------
-
-def _lade_fuellmenge_je_artikel() -> dict:
-    """Füllmenge je Norm-Nr (Blatt "Almanca Hilfsdaten", Spalte C/D - genau
-    die Quelle, die auch die Live-Formeln in der Vorlage fuer Spalte J
-    (Füllmenge) nutzen)."""
-    try:
-        hilfsdaten = pd.read_excel(VORLAGE_DATEI, sheet_name="Almanca Hilfsdaten")
-    except (FileNotFoundError, ValueError):
-        return {}
-    spalten = hilfsdaten.columns
-    if len(spalten) < 4:
-        return {}
-    norm_nr_spalte, fuellmenge_spalte = spalten[2], spalten[3]
-    tabelle = hilfsdaten[[norm_nr_spalte, fuellmenge_spalte]].dropna()
-    tabelle.columns = ["Norm-Nr", "Fuellmenge"]
-    tabelle = tabelle.drop_duplicates(subset="Norm-Nr", keep="first")
-    tabelle["Norm-Nr"] = pd.to_numeric(tabelle["Norm-Nr"], errors="coerce")
-    tabelle = tabelle.dropna(subset=["Norm-Nr"])
-    tabelle["Norm-Nr"] = tabelle["Norm-Nr"].astype(int)
-    return dict(zip(tabelle["Norm-Nr"], tabelle["Fuellmenge"]))
-
+# Füllmenge kommt aus bestand_logik (gemeinsame Quelle mit der Bestandsrechnung
+# dort/im Dashboard Dispo) - hier nur noch die Palettenspezifikation (wird
+# ausserhalb der Planung nicht gebraucht).
 
 def _lade_palettenspezifikation() -> dict:
     """(Lagerort, Norm-Nr) -> {anzahl_pro_lage, anzahl_volle_palette, typ}
@@ -133,7 +116,6 @@ def _lade_palettenspezifikation() -> dict:
     return spezifikation
 
 
-_FUELLMENGE_JE_ARTIKEL = _lade_fuellmenge_je_artikel()
 _PALETTENSPEZIFIKATION = _lade_palettenspezifikation()
 
 # Standardwert, falls ein (Lagerort, Norm-Nr) nicht in Stammdaten vorkommt.
@@ -141,7 +123,7 @@ _STANDARD_PALETTE = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 10, "typ": "
 
 
 def _fuellmenge(norm_nr) -> float:
-    return _FUELLMENGE_JE_ARTIKEL.get(norm_nr, 1.0) or 1.0
+    return bestand_logik.fuellmenge(norm_nr)
 
 
 def _palettenspezifikation(lagerort: str, norm_nr) -> dict:
@@ -150,14 +132,22 @@ def _palettenspezifikation(lagerort: str, norm_nr) -> dict:
 
 # --- Kundenauftraege -> Rueckstaende / Planbar -------------------------------
 
-def _splitte_auftraege(positionen: pd.DataFrame, planungsdatum) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _splitte_auftraege(
+    positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame, planungsdatum
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Kundenauftraege vom aeltesten Ladedatum bis zum Planungsdatum, dann
     per bestand_logik.teile_nach_bestand() in (rueckstand, planbar)
     aufgeteilt - dieselbe Funktion, die auch das Dashboard Dispo fuer
     "Rückstand mit Bestand" nutzt (siehe dortige Doku fuer die genaue Regel
-    inkl. anteiliger Teilmengen)."""
+    inkl. anteiliger Teilmengen).
+
+    Nutzt bestand_logik.nutzbarer_bestand_je_artikel() (Charge-/Fuellmengen-
+    genau, siehe dortige Doku) statt der einfachen Spalte "Bestand
+    verfügbar" - eine Charge/Parti-Nr darf nicht mit einer anderen zu einer
+    Fuellmenge gemischt werden."""
     fenster = positionen[positionen["Ladedatum"] <= pd.Timestamp(planungsdatum)]
-    return bestand_logik.teile_nach_bestand(fenster)
+    nutzbar = bestand_logik.nutzbarer_bestand_je_artikel(bestand_je_charge, config.BESTAND_VERFUEGBAR)
+    return bestand_logik.teile_nach_bestand(fenster, nutzbar)
 
 
 def _gruppiere_je_abladestelle_artikel(df: pd.DataFrame) -> pd.DataFrame:
@@ -442,9 +432,10 @@ def _palettenspezifikation_abdeckung(planbar: pd.DataFrame) -> tuple[int, int]:
 
 
 def erstelle_planungsdatei(
-    positionen: pd.DataFrame, zugang_vorbereitet: pd.DataFrame, planungsdatum
+    positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame,
+    zugang_vorbereitet: pd.DataFrame, planungsdatum,
 ) -> tuple[bytes, dict, pd.DataFrame]:
-    rueckstand, planbar = _splitte_auftraege(positionen, planungsdatum)
+    rueckstand, planbar = _splitte_auftraege(positionen, bestand_je_charge, planungsdatum)
     planungszeilen, dhl_ups_zeilen = _baue_planung_und_versand(planbar)
     palette_gefunden, palette_gesamt = _palettenspezifikation_abdeckung(planbar)
     zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
@@ -491,10 +482,13 @@ def render_planung_tab() -> None:
         "Erster Testaufbau. Nutzt dieselben Daten wie Dashboard Dispo "
         "(Bedarf + Bestand + Zugänge) - dort bitte zuerst die SAP-Exporte "
         "hochladen. Planbar ist nur, was der aktuell PHYSISCH vorhandene "
-        "Bestand deckt - unterwegs befindliche Zugänge zählen hier nicht "
-        "als verfügbar (anders als die Fehlmenge im Dashboard Dispo) und "
-        "werden stattdessen als Info (Referenz/NRI, Ankunftsdatum, Menge) "
-        "in die jeweilige Rückstandszeile geschrieben. Die Mix-Paletten-"
+        "Bestand deckt - je Charge/Parti-Nr einzeln auf volle Füllmengen "
+        "abgerundet (keine Mischung verschiedener Chargen in einer "
+        "Füllmenge), ohne Lagerort OUT1 (bereits für Versand bereitgestellt)."
+        " Unterwegs befindliche Zugänge zählen hier nicht als verfügbar "
+        "(anders als die Fehlmenge im Dashboard Dispo) und werden "
+        "stattdessen als Info (Referenz/NRI, Ankunftsdatum, Menge) in die "
+        "jeweilige Rückstandszeile geschrieben. Die Mix-Paletten-"
         "Zusammenlegung ist eine Heuristik (größte Reste zuerst kombinieren)"
         " - bitte mit echten Tagesdaten prüfen."
     )
@@ -513,7 +507,8 @@ def render_planung_tab() -> None:
     if st.button("📋 Planung erstellen", key="planung_erstellen"):
         with st.spinner("Planung wird erstellt..."):
             inhalt, kennzahlen, rueckstand_anzeige = erstelle_planungsdatei(
-                daten["positionen"], daten.get("zugang"), planungsdatum
+                daten["positionen"], daten.get("bestand_je_charge"),
+                daten.get("zugang"), planungsdatum,
             )
         st.session_state["planung_datei"] = inhalt
         st.session_state["planung_kennzahlen"] = kennzahlen

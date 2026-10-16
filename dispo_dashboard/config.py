@@ -33,6 +33,7 @@ BESTAND_SPALTEN = {
     "Miktar": "Menge",
     "Stok türü": "Bestandsart",
     "Depo tipi": "Lagertyp",
+    "Depo adresi": "Lagerort",
     "Parti": "Charge",
     "Mal giriş tarihi": "WE-Datum",
 }
