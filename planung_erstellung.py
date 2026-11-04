@@ -42,7 +42,7 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift.
 - Packeinheiten < 5 je Artikel -> komplette Zeile zu "DHL UPS" (gruen
   ausgefuellt), da zu wenig fuer eine eigene Palette.
-- Rest-Packeinheiten (nach vollen Paletten) werden je Abladestelle
+- Artikel mit < 5 KLT werden je Abladestelle
   versucht mit anderen Artikeln zu einer Mix-Palette zusammenzulegen
   (bis zur Lagen-Kapazitaet lt. Stammdaten: 10 bei Standard-Paletten,
   20 bei VWPAL), damit keine Palette mit nur bis zu 5 Stueck alleine
@@ -64,11 +64,15 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   Auftragszaehler B2 es nicht als Lagerauftrag zaehlt; bei zusaetzlichem
   MGBEKLEYEN-Hinweis "MGBEKLEYEN · TT.MM.JJJJ").
 - Rueckstaende, fuer die laut ZMM1000 bis spaetestens zum Planungsdatum
-  eine NRI eintrifft (Ware noch nicht da): eigener Bereich ganz unten unter
-  den geplanten Zeilen in "Almanca", A bis T gelb, Ladedatum in L, NRI-Info
-  in M, Kennzeichnung "Erwartet – nicht in Summe" in Z. E2 (Paletten
-  gesamt) und H2 (Gesamtgewicht) summieren per SUMMEWENNS alles ausser
-  diesen Zeilen - Text in Z loeschen, sobald die Ware mitgenommen wird.
+  eine NRI eintrifft (Ware noch nicht da): im Blatt "Rückstände" A bis T
+  gelb, in M genau die NRI(s), die die Zeile decken; deckt die NRI nur einen
+  Teil, steht das in Z. Die Planung ("Almanca", E2/H2) bleibt unberuehrt.
+- Paletten (Stand 04.11.): Reste werden je LAGE bestimmt - liegen auf der
+  angefangenen obersten Lage weniger als 5 KLT, kommen sie von der Palette
+  und gehen zu DHL UPS.
+  Geplante Mix-Paletten stehen sichtbar in der Datei (N Palettentyp, Q
+  Anzahl in der Zeile mit dem groessten Anteil, Erklaerung in Z), weil die
+  Excel-Formeln je Zeile rechnen und Mix-Paletten nicht kennen.
 - Vorziehen: Rueckstaende mit jetzt vorhandener Ware koennen in eine bereits
   erstellte Planungsdatei nachgetragen werden (ergaenze_bestehende_planung).
 
@@ -101,16 +105,9 @@ GELB_FUELLUNG = PatternFill(patternType="solid", fgColor="FFFFFF00")
 # Spalten (1-basiert) der Vorlage, die NICHT per Formel befuellt werden
 # (Eingabe-/Notizspalten) - nur diese werden geschrieben/verschoben.
 SPALTE_LAGERORT, SPALTE_VW_NR, SPALTE_NORM_NR, SPALTE_MENGE = 3, 6, 7, 9
-SPALTE_LAGERAUFTRAG, SPALTE_LIEFERSCHEIN, SPALTE_HINWEIS = 12, 13, 26
-EINGABE_SPALTEN = (SPALTE_LAGERORT, SPALTE_NORM_NR, SPALTE_MENGE,
-                   SPALTE_LAGERAUFTRAG, SPALTE_LIEFERSCHEIN, SPALTE_HINWEIS)
+SPALTE_LAGERAUFTRAG, SPALTE_LIEFERSCHEIN = 12, 13
+SPALTE_PALETTEN_TYP, SPALTE_PALETTEN_ANZAHL, SPALTE_HINWEIS = 14, 17, 26
 GELB_BIS_SPALTE = 20  # A bis T
-# Kennzeichnung in Spalte Z fuer den Bereich "Zugang erwartet". E2/H2 der
-# Vorlage summieren per SUMMEWENNS alles AUSSER diesen Zeilen - wer die Ware
-# nach Eintreffen doch mitnimmt, loescht einfach den Text in Spalte Z.
-ERWARTET_MARKER = "Erwartet – nicht in Summe"
-SUMME_PALETTEN = '=SUMIFS(Q5:Q624,Z5:Z624,"<>Erwartet*")'
-SUMME_GEWICHT = '=SUMIFS(T5:T624,Z5:Z624,"<>Erwartet*")'
 MINDEST_PACKEINHEITEN_FUER_PALETTE = 5  # darunter: einzeln nicht paletten-/versandfaehig -> DHL/UPS
 
 
@@ -209,110 +206,121 @@ def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# --- Mix-Paletten je Abladestelle: Reste nach vollen Paletten kombinieren ---
+# --- Paletten je Abladestelle: volle Lagen, Reste, Mix-Paletten -------------
+#
+# Regel (Anfrage 04.11.):
+# - Je Artikel: KLT auf Paletten (Kapazitaet "Anzahl" lt. Stammdaten, Lagen zu
+#   "Anzahl Pro Lage"). Liegen auf der obersten, angefangenen Lage weniger als
+#   5 KLT (MINDEST_PACKEINHEITEN_FUER_PALETTE), werden diese KLT von der
+#   Palette genommen (Beispiel 307M7: 11 KLT bei 10/Lage -> 10 bleiben, 1 raus).
+#   Diese KLT gehen zu "DHL UPS".
+# - Artikel mit insgesamt < 5 KLT haben keine eigene Palette. Sie werden je
+#   Abladestelle zu Mix-Paletten (eine Lage, groesster Artikel zuerst)
+#   zusammengelegt. Kommen >= 5 KLT zusammen, wird die Mix-Palette geplant und
+#   in der Datei sichtbar gemacht (Spalte N Palettentyp + Q = 1 in der Zeile
+#   mit dem groessten Anteil, Erklaerung in Z) - Beispiel 307K2: 3 + 2 + 1 KLT
+#   -> 1 x 111444. Sonst gehen sie zu "DHL UPS".
+# - Abgetrennte Lagen-Reste grosser Artikel kommen bewusst NICHT auf
+#   Mix-Paletten: sonst stuende ihre Menge (nur eine Zeile je Artikel) in der
+#   Zeile mit der eigenen Palette, und die Excel-Formel Q wuerde sie dort
+#   mitzaehlen. So bleiben N/Q in allen Zeilen mit eigener Palette Formeln.
+# - Pro Artikel/Abladestelle hoechstens eine Zeile je Blatt.
 
-def _teile_in_paletten_und_rest(zeile, lagerort: str) -> tuple[int, int, dict]:
-    spezifikation = _palettenspezifikation(lagerort, zeile["Norm-Nr"])
-    kapazitaet = int(spezifikation["anzahl_volle_palette"])
-    packeinheiten = int(zeile["Packeinheiten"])
-    volle_paletten = packeinheiten // kapazitaet if kapazitaet else 0
-    rest = packeinheiten - volle_paletten * kapazitaet
-    return volle_paletten, rest, spezifikation
+STANDARD_MIX_PALETTE = "111444"
+BEKANNTE_PALETTEN = {"111444", "VWPAL", "99C159"}
+
+
+def _teile_artikel(zeile, lagerort: str) -> dict:
+    """KLT eines Artikels in (bleibt auf eigener Palette, Rest fuer Mix/DHL)."""
+    spez = _palettenspezifikation(lagerort, zeile["Norm-Nr"])
+    pro_lage = int(spez["anzahl_pro_lage"]) or 10
+    pro_palette = int(spez["anzahl_volle_palette"]) or pro_lage
+    klt = int(zeile["Packeinheiten"])
+    if klt < MINDEST_PACKEINHEITEN_FUER_PALETTE:
+        bleibt, rest = 0, klt
+    else:
+        angefangene_lage = (klt % pro_palette) % pro_lage
+        if angefangene_lage and angefangene_lage < MINDEST_PACKEINHEITEN_FUER_PALETTE:
+            bleibt, rest = klt - angefangene_lage, angefangene_lage
+        else:
+            bleibt, rest = klt, 0
+    return {"bleibt": bleibt, "rest": rest, "pro_lage": pro_lage, "typ": str(spez.get("typ") or "").strip()}
 
 
 def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict], list[dict]]:
-    """Gibt (planungszeilen, dhl_ups_zeilen) fuer eine Abladestelle zurueck.
-    planungszeilen: Artikel mit ausreichend Packeinheiten fuer mind. eine
-    volle Palette (Reste werden, wenn kombinierbar, einem Artikel der
-    Gruppe als Mix-Palette zugeschlagen - sonst zu DHL/UPS).
+    """Gibt (planungszeilen, dhl_ups_zeilen) fuer eine Abladestelle zurueck
+    (Regel siehe Abschnittskommentar oben).
 
-    WICHTIG: Pro Artikel gibt es je Abladestelle hoechstens EINE Zeile in
-    planungszeilen - nie zwei (z. B. "3 Paletten" + separat "6 KLT"
-    desselben Artikels). Hat ein Artikel an dieser Abladestelle schon eine
-    Zeile (volle Paletten oder ein zuvor zugeordneter Mix-Anteil), wird
-    jeder weitere Rest - ob alleinstehend oder mit einem ANDEREN Artikel zu
-    einer Mix-Palette kombiniert - dort draufgerechnet statt eine zweite
-    Zeile zu erzeugen."""
-    planungszeilen: list[dict] = []
-    hauptzeile_je_artikel: dict = {}  # Norm-Nr -> deren Zeile in planungszeilen
-    offene_reste: list[dict] = []  # Kandidaten fuer Mix-Palette
-
+    Zeilen-Felder: Norm-Nr, Menge, Menge_gerundet; optional "Paletten Typ" /
+    "Paletten Anzahl" (werden dann statt der Formeln N/Q geschrieben, weil die
+    Excel-Formeln Mix-Paletten nicht kennen) und "Hinweis" (Spalte Z)."""
+    planung: dict = {}  # Norm-Nr -> Zeile
+    reste: list[dict] = []
+    dhl_ups: list[dict] = []
     for _, zeile in gruppe.iterrows():
-        packeinheiten = int(zeile["Packeinheiten"])
-        if packeinheiten < MINDEST_PACKEINHEITEN_FUER_PALETTE:
-            offene_reste.append({
-                "Norm-Nr": zeile["Norm-Nr"], "Menge": zeile["Menge"],
-                "Packeinheiten": packeinheiten, "Menge_gerundet": zeile["Menge_gerundet"],
-                "angehaengt": False,
-            })
-            continue
-
-        volle_paletten, rest, spezifikation = _teile_in_paletten_und_rest(zeile, lagerort)
-        if volle_paletten > 0:
-            kapazitaet = int(spezifikation["anzahl_volle_palette"])
-            eintrag = {
-                "Norm-Nr": zeile["Norm-Nr"],
-                "Menge": volle_paletten * kapazitaet * zeile["Fuellmenge"],
-                "Menge_gerundet": zeile["Menge_gerundet"],
-                "anzahl_pro_lage": spezifikation["anzahl_pro_lage"],
+        teil = _teile_artikel(zeile, lagerort)
+        fm = zeile["Fuellmenge"]
+        if teil["bleibt"]:
+            planung[zeile["Norm-Nr"]] = {
+                "Norm-Nr": zeile["Norm-Nr"], "Menge": teil["bleibt"] * fm,
+                # Aufrundung steckt in der letzten KLT - die gehoert zum Rest,
+                # falls einer abgetrennt wurde.
+                "Menge_gerundet": bool(zeile["Menge_gerundet"]) and not teil["rest"],
             }
-            planungszeilen.append(eintrag)
-            hauptzeile_je_artikel[zeile["Norm-Nr"]] = eintrag
-        if rest > 0:
-            # VWPAL: ein Rest von genau der Haelfte der Lagen-Kapazitaet
-            # (z. B. 10 von 20) soll nicht alleine stehen - bevorzugt
-            # auffuellen, daher mit hoeherer Prioritaet (groesster Rest
-            # zuerst) in die Kombinationsliste.
-            offene_reste.append({
-                "Norm-Nr": zeile["Norm-Nr"], "Menge": rest * zeile["Fuellmenge"],
-                "Packeinheiten": rest, "Menge_gerundet": True,
-                "anzahl_pro_lage": spezifikation["anzahl_pro_lage"],
-                "angehaengt": False,
+        if teil["rest"] and teil["bleibt"]:
+            # Angefangene Lage eines grossen Artikels -> DHL UPS.
+            dhl_ups.append({
+                "Norm-Nr": zeile["Norm-Nr"], "Menge": teil["rest"] * fm,
+                "Menge_gerundet": bool(zeile["Menge_gerundet"]),
+            })
+        elif teil["rest"]:
+            reste.append({
+                "Norm-Nr": zeile["Norm-Nr"], "KLT": teil["rest"], "Fuellmenge": fm,
+                "Menge_gerundet": bool(zeile["Menge_gerundet"]),
+                "pro_lage": teil["pro_lage"], "typ": teil["typ"],
             })
 
-    # Reste absteigend nach Packeinheiten kombinieren (groesster Rest bildet
-    # den Grundstock einer Mix-Palette, kleinere Reste werden - soweit die
-    # Lagen-Kapazitaet reicht - dazugelegt).
-    offene_reste.sort(key=lambda r: r["Packeinheiten"], reverse=True)
-    dhl_ups_zeilen: list[dict] = []
-    while offene_reste:
-        grundstock = offene_reste.pop(0)
-        kapazitaet = grundstock.get("anzahl_pro_lage", 10)
-        summe = grundstock["Packeinheiten"]
-        mix_artikel = [grundstock]
-        rest_liste = []
-        for kandidat in offene_reste:
-            if summe + kandidat["Packeinheiten"] <= kapazitaet:
-                summe += kandidat["Packeinheiten"]
-                mix_artikel.append(kandidat)
+    # Mix-Paletten: groesster Rest zuerst als Grundstock, auffuellen bis eine Lage voll.
+    reste.sort(key=lambda r: r["KLT"], reverse=True)
+    while reste:
+        grundstock = reste.pop(0)
+        kapazitaet = grundstock["pro_lage"]
+        mix, summe, uebrig = [grundstock], grundstock["KLT"], []
+        for kandidat in reste:
+            if summe + kandidat["KLT"] <= kapazitaet:
+                mix.append(kandidat)
+                summe += kandidat["KLT"]
             else:
-                rest_liste.append(kandidat)
-        offene_reste = rest_liste
+                uebrig.append(kandidat)
+        reste = uebrig
 
         if summe < MINDEST_PACKEINHEITEN_FUER_PALETTE:
-            for artikel in mix_artikel:
-                dhl_ups_zeilen.append(artikel)
-        else:
-            # Egal ob der Rest alleine stand oder mit einem anderen Artikel
-            # gemischt wurde: hat der Artikel an dieser Abladestelle schon
-            # eine Zeile (volle Paletten oder ein frueherer Mix-Anteil),
-            # wird hier draufgerechnet statt eine zweite Zeile fuer
-            # denselben Artikel zu schreiben - nie zwei Zeilen je Artikel.
-            for artikel in mix_artikel:
-                hauptzeile = hauptzeile_je_artikel.get(artikel["Norm-Nr"])
-                if hauptzeile is not None:
-                    hauptzeile["Menge"] += artikel["Menge"]
-                    hauptzeile["Menge_gerundet"] = True
-                else:
-                    eintrag = {
-                        "Norm-Nr": artikel["Norm-Nr"], "Menge": artikel["Menge"],
-                        "Menge_gerundet": artikel["Menge_gerundet"],
-                        "anzahl_pro_lage": kapazitaet,
-                    }
-                    planungszeilen.append(eintrag)
-                    hauptzeile_je_artikel[artikel["Norm-Nr"]] = eintrag
+            for r in mix:
+                dhl_ups.append({
+                    "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
+                    "Menge_gerundet": r["Menge_gerundet"],
+                })
+            continue
 
-    return planungszeilen, dhl_ups_zeilen
+        typ = grundstock["typ"] if grundstock["typ"] in BEKANNTE_PALETTEN else STANDARD_MIX_PALETTE
+        beschreibung = "Mix-Palette " + " + ".join(f"{r['KLT']}" for r in mix) + f" = {summe} KLT"
+        for i, r in enumerate(mix):
+            eintrag = {
+                "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
+                "Menge_gerundet": r["Menge_gerundet"],
+            }
+            if i == 0:
+                # Zeile mit dem groessten Anteil traegt die Mix-Palette (die
+                # Formeln N/Q ergaeben hier "-"/0, weil < 5 KLT je Zeile).
+                eintrag["Paletten Typ"] = typ
+                eintrag["Paletten Anzahl"] = 1
+                eintrag["Hinweis"] = f"{beschreibung} (1 x {typ} in dieser Zeile)"
+            else:
+                eintrag["Hinweis"] = f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}"
+            planung[r["Norm-Nr"]] = eintrag
+
+    planungszeilen = [planung[n] for n in gruppe["Norm-Nr"] if n in planung]
+    return planungszeilen, dhl_ups
 
 
 def _teilmenge_kombis(rueckstand: pd.DataFrame, planbar: pd.DataFrame) -> set:
@@ -361,29 +369,27 @@ def _rueckstand_seit_je_kombi(planbar: pd.DataFrame, stichtag) -> dict:
     return alt.groupby(["Abladestelle", "Norm-Nr"])["Ladedatum"].min().to_dict()
 
 
-def _erwartete_zeilen(
-    rueckstand: pd.DataFrame, zugang_vorbereitet: pd.DataFrame | None, planungsdatum
-) -> list[dict]:
+def _markiere_eintreffende(
+    rueckstand_anzeige: pd.DataFrame, zugang_vorbereitet: pd.DataFrame | None, planungsdatum
+) -> pd.DataFrame:
     """Rueckstaende (physisch nicht gedeckt), fuer die laut ZMM1000 bis
-    spaetestens zum Planungsdatum ein Zugang (NRI) eintrifft. Je Artikel wird
-    die eintreffende Menge nach Dringlichkeit (aeltestes Ladedatum zuerst) auf
-    die Rueckstandszeilen verteilt; gedeckter Teil auf volle Fuellmenge
-    aufgerundet. Diese Zeilen kommen als eigener, gelber Bereich unter die
-    Planung - nur als Erinnerung, NICHT in Paletten-/Gewichtssumme (E2/H2)."""
-    if rueckstand.empty or zugang_vorbereitet is None or zugang_vorbereitet.empty:
-        return []
+    spaetestens zum Planungsdatum eine NRI eintrifft. Je Artikel wird die
+    eintreffende Menge nach Dringlichkeit (aeltestes Ladedatum zuerst) auf die
+    Rueckstandszeilen verteilt. Ergebnis: Spalte "Eintreffend bis Planung"
+    (gedeckte Menge, 0 = nichts) und - fuer diese Zeilen - "Zugang Info" mit
+    genau den NRIs, die die Zeile decken. Diese Zeilen werden im Blatt
+    "Rückstände" gelb markiert, damit sie nicht vergessen werden."""
+    df = rueckstand_anzeige.copy()
+    df["Eintreffend bis Planung"] = 0.0
+    if df.empty or zugang_vorbereitet is None or zugang_vorbereitet.empty:
+        return df
     zugaenge = zugang_vorbereitet[
         zugang_vorbereitet["Ankunft gerechnet"] <= pd.Timestamp(planungsdatum)
     ].sort_values("Ankunft gerechnet")
-    if zugaenge.empty:
-        return []
-    gruppiert = _gruppiere_je_abladestelle_artikel(rueckstand)
-    zeilen: list[dict] = []
     for norm_nr, zg in zugaenge.groupby("Norm-Nr"):
-        # Warteschlange der eintreffenden NRIs (frueheste zuerst) mit Restmenge
         warteschlange = [dict(z, Rest=float(z["Menge"])) for z in zg.to_dict("records")]
-        kandidaten = gruppiert[gruppiert["Norm-Nr"] == norm_nr].sort_values(["Ladedatum", "Abladestelle"])
-        for _, r in kandidaten.iterrows():
+        zeilen = df[df["Norm-Nr"] == norm_nr].sort_values(["Ladedatum", "Abladestelle"])
+        for idx, r in zeilen.iterrows():
             offen, genutzt = float(r["Menge"]), []
             while offen > 0 and warteschlange:
                 z = warteschlange[0]
@@ -393,19 +399,11 @@ def _erwartete_zeilen(
                 genutzt.append(z)
                 if z["Rest"] <= 0:
                     warteschlange.pop(0)
-            menge = float(r["Menge"]) - offen
-            if menge <= 0:
+            if not genutzt:
                 break
-            info = "; ".join(_formatiere_zugang_info(z) for z in genutzt)
-            f = _fuellmenge(norm_nr)
-            gerundet = math.ceil(menge / f) * f
-            zeilen.append({
-                "Abladestelle": r["Abladestelle"], "Norm-Nr": norm_nr, "Menge": gerundet,
-                "Menge_gerundet": gerundet != menge, "Ladedatum": r["Ladedatum"],
-                "Zugang Info": info,
-            })
-    zeilen.sort(key=lambda z: (str(z["Abladestelle"]), z["Norm-Nr"]))
-    return zeilen
+            df.loc[idx, "Eintreffend bis Planung"] = float(r["Menge"]) - offen
+            df.loc[idx, "Zugang Info"] = "; ".join(_formatiere_zugang_info(z) for z in genutzt)
+    return df
 
 
 # --- In die Vorlage schreiben -------------------------------------------
@@ -426,26 +424,17 @@ def _schreibe_ladedatum(zelle, ladedatum, zusatz: str | None = None) -> None:
         zelle.number_format = "DD.MM.YYYY"
 
 
-def _benoetigte_zeilen(zeilen: list[dict]) -> int:
-    """Zeilen inkl. Leerzeilen zwischen Abladestellen-Gruppen."""
-    if not zeilen:
-        return 0
-    wechsel = sum(1 for a, b in zip(zeilen, zeilen[1:]) if a["Abladestelle"] != b["Abladestelle"])
-    return len(zeilen) + wechsel
-
-
 def _schreibe_zeilen(
     ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_fuellung: bool,
     teilmenge_kombis: set = frozenset(), hinweis_artikel: set = frozenset(),
-    rueckstand_seit: dict | None = None, erwartet: bool = False,
-    start_zeile: int = ERSTE_DATENZEILE,
+    rueckstand_seit: dict | None = None, start_zeile: int = ERSTE_DATENZEILE,
 ) -> int:
     """Schreibt die Zeilen ab start_zeile, gibt die naechste freie Zeile zurueck.
 
     rueckstand_seit: (Abladestelle, Norm-Nr) -> urspruengliches Ladedatum fuer
     eingeplante Rueckstaende (VW-Nr rot + Ladedatum in L).
-    erwartet=True: Bereich "Zugang erwartet" - A bis T gelb, Ladedatum in L,
-    NRI-Info in M, Kennzeichnung in Z (nicht in E2/H2-Summe)."""
+    Optionale Zeilen-Felder "Paletten Typ"/"Paletten Anzahl" ueberschreiben die
+    Formeln in N/Q (Mix-Paletten), "Hinweis" kommt nach Spalte Z."""
     rueckstand_seit = rueckstand_seit or {}
     aktuelle_abladestelle = None
     zeile_nr = start_zeile
@@ -464,23 +453,23 @@ def _schreibe_zeilen(
         if gruen_fuellung:
             for spalte in (SPALTE_LAGERORT, SPALTE_NORM_NR, SPALTE_MENGE):
                 ws.cell(row=zeile_nr, column=spalte).fill = GRUEN_FUELLUNG
+        if eintrag.get("Paletten Typ"):
+            ws.cell(row=zeile_nr, column=SPALTE_PALETTEN_TYP, value=eintrag["Paletten Typ"])
+        if eintrag.get("Paletten Anzahl") is not None:
+            ws.cell(row=zeile_nr, column=SPALTE_PALETTEN_ANZAHL, value=int(eintrag["Paletten Anzahl"]))
+
+        hinweise = []
+        if kombi in teilmenge_kombis:
+            # Nur ein Teil der offenen Menge war durch Bestand gedeckt - der
+            # Rest steht zusaetzlich in den Rueckstaenden.
+            hinweise.append("Teilmenge, Prüfen")
+        if eintrag.get("Hinweis"):
+            hinweise.append(eintrag["Hinweis"])
+        if hinweise:
+            ws.cell(row=zeile_nr, column=SPALTE_HINWEIS, value=" · ".join(hinweise))
 
         lagerauftrag = ws.cell(row=zeile_nr, column=SPALTE_LAGERAUFTRAG)
         mgbekleyen = eintrag["Norm-Nr"] in hinweis_artikel
-        if erwartet:
-            for spalte in range(1, GELB_BIS_SPALTE + 1):
-                ws.cell(row=zeile_nr, column=spalte).fill = GELB_FUELLUNG
-            _schreibe_ladedatum(lagerauftrag, eintrag["Ladedatum"])
-            ws.cell(row=zeile_nr, column=SPALTE_LIEFERSCHEIN, value=eintrag.get("Zugang Info", ""))
-            ws.cell(row=zeile_nr, column=SPALTE_HINWEIS, value=ERWARTET_MARKER)
-            zeile_nr += 1
-            continue
-
-        if kombi in teilmenge_kombis:
-            # Nur ein Teil der urspruenglich offenen Menge war durch Bestand
-            # gedeckt - der Rest steht (mit derselben Abladestelle/Artikel)
-            # zusaetzlich in den Rueckstaenden.
-            ws.cell(row=zeile_nr, column=SPALTE_HINWEIS, value="Teilmenge, Prüfen")
         if kombi in rueckstand_seit:
             # War Rueckstand, Ware ist jetzt da: VW-Nr (Formelzelle F) rot,
             # urspruengliches Ladedatum in L.
@@ -494,13 +483,6 @@ def _schreibe_zeilen(
 
         zeile_nr += 1
     return zeile_nr
-
-
-def _setze_summenformeln(ws) -> None:
-    """E2 (Paletten gesamt) und H2 (Gesamtgewicht) ohne die Zeilen des
-    Bereichs "Zugang erwartet" (Kennzeichnung in Spalte Z)."""
-    ws["E2"] = SUMME_PALETTEN
-    ws["H2"] = SUMME_GEWICHT
 
 
 def _zugang_warteschlangen_je_artikel(zugang_vorbereitet: pd.DataFrame | None) -> dict:
@@ -572,6 +554,14 @@ def _schreibe_rueckstaende(ws, gruppiert: pd.DataFrame) -> int:
         if eintrag["Zugang Info"]:
             ws.cell(row=zeile_nr, column=13, value=eintrag["Zugang Info"]).font = rote_schrift
             mit_zugang += 1
+        eintreffend = float(eintrag.get("Eintreffend bis Planung", 0) or 0)
+        if eintreffend > 0:
+            # NRI trifft bis zum Planungsdatum ein -> gelb (A bis T), nicht vergessen.
+            for spalte in range(1, GELB_BIS_SPALTE + 1):
+                ws.cell(row=zeile_nr, column=spalte).fill = GELB_FUELLUNG
+            if eintreffend < float(eintrag["Menge"]):
+                teil = f"{eintreffend:,.0f}".replace(",", ".")
+                ws.cell(row=zeile_nr, column=SPALTE_HINWEIS, value=f"NRI deckt nur {teil} Stk")
         zeile_nr += 1
     return mit_zugang
 
@@ -603,22 +593,14 @@ def erstelle_planungsdatei(
     rueckstand_anzeige = _rueckstand_anzeige(rueckstand, zugang_warteschlangen)
     hinweis_artikel = bestand_logik.artikel_mit_lagerort_hinweis(bestand_je_charge, config.BESTAND_VERFUEGBAR)
     rueckstand_seit = _rueckstand_seit_je_kombi(planbar, stichtag)
-    erwartet = _erwartete_zeilen(rueckstand, zugang_vorbereitet, planungsdatum)
+    rueckstand_anzeige = _markiere_eintreffende(rueckstand_anzeige, zugang_vorbereitet, planungsdatum)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
-    naechste = _schreibe_zeilen(
+    _schreibe_zeilen(
         wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False,
         teilmenge_kombis=teilmengen, hinweis_artikel=hinweis_artikel,
         rueckstand_seit=rueckstand_seit,
     )
-    if erwartet:
-        # Eigener Bereich ganz unten unter den geplanten Zeilen.
-        start = naechste + 1 if planungszeilen else ERSTE_DATENZEILE
-        _schreibe_zeilen(
-            wb["Almanca"], erwartet, rot_wenn_gerundet=True, gruen_fuellung=False,
-            erwartet=True, start_zeile=start,
-        )
-    _setze_summenformeln(wb["Almanca"])
     _schreibe_zeilen(
         wb["DHL UPS"], dhl_ups_zeilen, rot_wenn_gerundet=False, gruen_fuellung=True,
         teilmenge_kombis=teilmengen, hinweis_artikel=hinweis_artikel,
@@ -641,7 +623,8 @@ def erstelle_planungsdatei(
             1 for z in planungszeilen + dhl_ups_zeilen
             if (z["Abladestelle"], z["Norm-Nr"]) in rueckstand_seit
         ),
-        "erwartet_zeilen": len(erwartet),
+        "erwartet_zeilen": int((rueckstand_anzeige["Eintreffend bis Planung"] > 0).sum()),
+        "mix_paletten": sum(1 for z in planungszeilen if str(z.get("Hinweis", "")).startswith("Mix-Palette")),
         "palette_spezifikation_gefunden": palette_gefunden,
         "palette_spezifikation_gesamt": palette_gesamt,
     }
@@ -663,10 +646,6 @@ def _normiere_norm_nr(wert):
         return int(float(wert))
     except (TypeError, ValueError):
         return None
-
-
-def _ist_erwartet(wert) -> bool:
-    return isinstance(wert, str) and wert.startswith("Erwartet")
 
 
 def _belegte_zeilen(ws) -> list[int]:
@@ -716,14 +695,24 @@ def vorzieh_kandidaten(
             for a, n in zip(kandidaten["Abladestelle"], kandidaten["Norm-Nr"])
         ]
         kandidaten = kandidaten[[not x for x in schon_drin]]
-    kandidaten = kandidaten.copy()
     if "VW-Nr" not in kandidaten.columns:
-        kandidaten["VW-Nr"] = ""
-    kandidaten["Ziel"] = [
-        "Almanca" if pe >= MINDEST_PACKEINHEITEN_FUER_PALETTE else "DHL UPS"
-        for pe in kandidaten["Packeinheiten"]
-    ]
-    return kandidaten.sort_values(["Abladestelle", "Norm-Nr"])[spalten].reset_index(drop=True)
+        kandidaten = kandidaten.assign(**{"VW-Nr": ""})
+    # Gleiche Palettenregel wie in der Planung: angefangene Lage < 5 KLT bzw.
+    # Artikel < 5 KLT -> "DHL UPS", der Rest auf die eigene Palette (Almanca).
+    zeilen = []
+    for _, k in kandidaten.iterrows():
+        teil = _teile_artikel(k, _normiere_lagerort(k["Abladestelle"]))
+        for klt, ziel in ((teil["bleibt"], "Almanca"), (teil["rest"], "DHL UPS")):
+            if klt:
+                zeilen.append({
+                    "Abladestelle": k["Abladestelle"], "Norm-Nr": k["Norm-Nr"], "VW-Nr": k["VW-Nr"],
+                    "Menge": klt * k["Fuellmenge"], "Packeinheiten": klt, "Ladedatum": k["Ladedatum"],
+                    "Ziel": ziel,
+                    "Menge_gerundet": bool(k["Menge_gerundet"]) and (ziel == "DHL UPS" or not teil["rest"]),
+                })
+    if not zeilen:
+        return pd.DataFrame(columns=spalten)
+    return pd.DataFrame(zeilen).sort_values(["Abladestelle", "Norm-Nr", "Ziel"])[spalten].reset_index(drop=True)
 
 
 def _kopiere_stil(quelle, ziel) -> None:
@@ -732,29 +721,10 @@ def _kopiere_stil(quelle, ziel) -> None:
     ziel.number_format = quelle.number_format
 
 
-def _verschiebe_bereich(ws, von: int, bis: int, versatz: int) -> None:
-    """Zeilen von..bis (nur Eingabespalten + Fuellfarbe A-T/Z) um versatz
-    Zeilen nach unten verschieben - die Formelspalten der Vorlage stehen in
-    jeder Zeile gleich und bleiben unberuehrt. Die frei werdenden Zellen
-    bekommen den Stil einer leeren Vorlagenzeile."""
-    leer = bis + versatz + 5
-    spalten = sorted(set(EINGABE_SPALTEN) | set(range(1, GELB_BIS_SPALTE + 1)))
-    for r in range(bis, von - 1, -1):
-        for c in spalten:
-            alt = ws.cell(row=r, column=c)
-            neu = ws.cell(row=r + versatz, column=c)
-            if c in EINGABE_SPALTEN:
-                neu.value = alt.value
-                alt.value = None
-            _kopiere_stil(alt, neu)
-            _kopiere_stil(ws.cell(row=leer, column=c), alt)
-
-
 def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
     """Ausgewaehlte Kandidaten (Spalten wie vorzieh_kandidaten(), "Ziel" =
     Almanca/DHL UPS) in eine bestehende Planungsdatei schreiben:
-    Almanca direkt unter die letzte geplante Zeile (ein evtl. vorhandener
-    gelber Bereich "Zugang erwartet" rueckt nach unten), DHL UPS ans Ende.
+    jeweils unter die letzte belegte Zeile (mit einer Leerzeile Abstand).
     Markierung wie in der Planung: VW-Nr rot, urspruengliches Ladedatum in L.
     Alles andere in der Datei (manuelle Eintraege, Lagerauftraege) bleibt."""
     wb = openpyxl.load_workbook(io.BytesIO(datei))
@@ -766,20 +736,11 @@ def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
         zeilen = teil.to_dict("records")
         seit = {(z["Abladestelle"], z["Norm-Nr"]): z["Ladedatum"] for z in zeilen}
         belegt = _belegte_zeilen(ws)
-        geplant = [r for r in belegt if not _ist_erwartet(ws.cell(row=r, column=SPALTE_HINWEIS).value)]
-        erwartet = [r for r in belegt if r not in geplant]
-        start = max(geplant) + 2 if geplant else ERSTE_DATENZEILE
-        if erwartet and blatt == "Almanca":
-            ende_neu = start + _benoetigte_zeilen(zeilen)  # erste Zeile nach dem neuen Block
-            versatz = (ende_neu + 1) - min(erwartet)  # eine Leerzeile Abstand
-            if versatz > 0:
-                _verschiebe_bereich(ws, min(erwartet), max(erwartet), versatz)
+        start = max(belegt) + 2 if belegt else ERSTE_DATENZEILE
         _schreibe_zeilen(
             ws, zeilen, rot_wenn_gerundet=(blatt == "Almanca"), gruen_fuellung=(blatt == "DHL UPS"),
             rueckstand_seit=seit, start_zeile=start,
         )
-        if blatt == "Almanca":
-            _setze_summenformeln(ws)
     puffer = io.BytesIO()
     wb.save(puffer)
     return puffer.getvalue()
@@ -811,13 +772,13 @@ def render_planung_tab() -> None:
         " - bitte mit echten Tagesdaten prüfen."
     )
     st.caption(
-        "Markierungen in \"Almanca\"/\"DHL UPS\": eingeplante Mengen, die "
-        "bereits Rückstand waren (Ladedatum vor dem Datenstand, Ware jetzt da) "
-        "→ VW-Nr rot, ursprüngliches Ladedatum in Spalte L. Rückstände, für die "
-        "bis zum Planungsdatum eine NRI eintrifft → eigener gelber Bereich (A–T) "
-        "unter der Planung, NICHT in Paletten gesamt (E2) / Gesamtgewicht (H2). "
-        "Trifft die Ware ein und wird mitgenommen: Text in Spalte Z löschen, "
-        "dann zählt die Zeile mit."
+        "Markierungen: eingeplante Mengen, die bereits Rückstand waren (Ladedatum "
+        "vor dem Datenstand, Ware jetzt da) → VW-Nr rot, ursprüngliches Ladedatum "
+        "in Spalte L. Im Blatt \"Rückstände\" sind Zeilen gelb (A–T), für die bis "
+        "zum Planungsdatum eine NRI eintrifft. Paletten: angefangene Lagen mit "
+        "weniger als 5 KLT kommen von der Palette (→ DHL UPS); Artikel unter 5 KLT "
+        "werden je Abladestelle zu Mix-Paletten zusammengelegt; "
+        "Mix-Paletten stehen mit Typ (N), Anzahl (Q) und Erklärung (Z) in der Datei."
     )
 
     daten = st.session_state.get("dispo_daten")
@@ -874,8 +835,8 @@ def render_planung_tab() -> None:
         st.caption(
             f"🔴 {eingeplant} eingeplante Zeile(n) waren Rückstand und sind jetzt "
             f"durch Bestand gedeckt (VW-Nr rot, Ladedatum in L). "
-            f"🟡 {erwartet_zeilen} Zeile(n) im gelben Bereich \"Zugang erwartet\" "
-            "(NRI trifft bis zum Planungsdatum ein, nicht in E2/H2)."
+            f"🟡 {erwartet_zeilen} Rückstandszeile(n) gelb: NRI trifft bis zum "
+            "Planungsdatum ein (Blatt \"Rückstände\")."
         )
 
     rueckstand_zeilen = kennzahlen.get("rueckstand_zeilen", 0)
@@ -992,11 +953,16 @@ def _render_rueckstand_vorschau(rueckstand_anzeige: pd.DataFrame | None, planung
                 treffer |= anzeige[spalte].astype(str).str.contains(suche, case=False, na=False)
         anzeige = anzeige[treffer]
 
-    spalten = [s for s in ["Norm-Nr", "VW-Nr", "Abladestelle", "Menge", "Ladedatum", "Zugang Info"]
+    spalten = [s for s in ["Norm-Nr", "VW-Nr", "Abladestelle", "Menge", "Ladedatum",
+                           "Eintreffend bis Planung", "Zugang Info"]
                if s in anzeige.columns]
     anzeige = anzeige[spalten].copy()
     anzeige["Ladedatum"] = anzeige["Ladedatum"].dt.strftime("%d.%m.%Y")
     anzeige["Menge"] = anzeige["Menge"].apply(lambda v: f"{v:,.0f}".replace(",", "."))
+    if "Eintreffend bis Planung" in anzeige.columns:
+        anzeige["Eintreffend bis Planung"] = anzeige["Eintreffend bis Planung"].apply(
+            lambda v: f"🟡 {v:,.0f}".replace(",", ".") if v and v > 0 else ""
+        )
     st.dataframe(
         anzeige,
         hide_index=True,

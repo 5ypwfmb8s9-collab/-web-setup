@@ -88,82 +88,150 @@ def test_eingeplanter_rueckstand_markiert(daten):
     assert kennzahlen["rueckstand_eingeplant"] == 1
 
 
-def test_erwartet_bereich_gelb_unten_und_nicht_in_summe(daten):
-    wb, kennzahlen, _ = _erstelle(daten)
-    ws = wb["Almanca"]
+def test_eintreffende_rueckstaende_gelb_im_blatt_rueckstaende(daten):
+    wb, kennzahlen, rueck = _erstelle(daten)
+    alm = wb["Almanca"]
+    assert A_ERW not in _zeilen(alm)  # nicht in der Planung
+    assert alm["E2"].value == "=SUM(Q5:Q624)" and alm["H2"].value == "=SUM(T5:T624)"
+    ws = wb["Rückstände"]
     zeilen = _zeilen(ws)
-    erw = zeilen[A_ERW]
-    assert erw > max(zeilen[A_ALT], zeilen[A_NEU]) + 1  # eigener Bereich mit Leerzeile
-    assert A_NIX not in zeilen  # NRI kommt erst nach dem Planungsdatum
-    assert ws.cell(row=erw, column=9).value == 25
-    assert ws.cell(row=erw, column=26).value == pe.ERWARTET_MARKER
-    assert "NRI2026000000001" in ws.cell(row=erw, column=13).value
-    assert ws.cell(row=erw, column=12).value.date() == pd.Timestamp("2026-10-28").date()
+    erw, nix = zeilen[A_ERW], zeilen[A_NIX]
     for spalte in range(1, 21):
         assert ws.cell(row=erw, column=spalte).fill.fgColor.rgb == "FFFFFF00"
     assert ws.cell(row=erw, column=21).fill.fgColor.rgb != "FFFFFF00"
-    assert ws["E2"].value == pe.SUMME_PALETTEN and "Erwartet" in ws["E2"].value
-    assert ws["H2"].value == pe.SUMME_GEWICHT
+    assert "NRI2026000000001" in ws.cell(row=erw, column=13).value
+    assert ws.cell(row=nix, column=1).fill.fgColor.rgb != "FFFFFF00"  # NRI erst nach Planungsdatum
     assert kennzahlen["erwartet_zeilen"] == 1
+    assert rueck.loc[rueck["Norm-Nr"] == A_ERW, "Eintreffend bis Planung"].iloc[0] == 25
 
 
-def test_erwartete_menge_wird_nach_dringlichkeit_verteilt():
-    rueck = _positionen([(A_NIX, "05C", "2026-10-15", 12), (A_NIX, "01D", "2026-10-30", 8)])
-    zugang = _zugang([(A_NIX, "NRI1", "2026-11-04", 15)])
-    zeilen = pe._erwartete_zeilen(rueck, zugang, PLANUNG)
-    mengen = {z["Abladestelle"]: z["Menge"] for z in zeilen}
-    assert mengen == {"05C": 12, "01D": 3}
+def test_eintreffende_menge_nach_dringlichkeit_und_nur_genutzte_nri():
+    rueck = pe._rueckstand_anzeige(
+        _positionen([(A_NIX, "05C", "2026-10-15", 12), (A_NIX, "01D", "2026-10-30", 8)]), {}
+    )
+    zugang = _zugang([(A_NIX, "NRI1", "2026-11-04", 12), (A_NIX, "NRI2", "2026-11-05", 1)])
+    df = pe._markiere_eintreffende(rueck, zugang, PLANUNG).set_index("Abladestelle")
+    assert df.loc["05C", "Eintreffend bis Planung"] == 12
+    assert df.loc["05C", "Zugang Info"].startswith("NRI1") and "NRI2" not in df.loc["05C", "Zugang Info"]
+    assert df.loc["01D", "Eintreffend bis Planung"] == 1
+    assert df.loc["01D", "Zugang Info"].startswith("NRI2")
 
+
+# --- Paletten / Mix-Paletten -------------------------------------------------
+
+def _gruppe(zeilen):
+    return pd.DataFrame(
+        [{"Norm-Nr": n, "Packeinheiten": k, "Fuellmenge": f, "Menge": k * f, "Menge_gerundet": g}
+         for n, k, f, g in zeilen]
+    )
+
+
+@pytest.fixture
+def spez(monkeypatch):
+    tabelle = {}
+    monkeypatch.setattr(pe, "_PALETTENSPEZIFIKATION", tabelle)
+    return tabelle
+
+
+def test_angefangene_lage_unter_5_klt_kommt_zu_dhl_ups(spez):
+    # Beispiel 307M7: 930730000, 11 KLT, 10 je Lage / 30 je Palette
+    spez[("307M7", 930730000)] = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 30, "typ": 111444}
+    plan, dhl = pe._plane_abladestelle(_gruppe([(930730000, 11, 700, True)]), "307M7")
+    assert [(z["Norm-Nr"], z["Menge"]) for z in plan] == [(930730000, 7000)]
+    assert not plan[0]["Menge_gerundet"]  # Aufrundung steckt in der abgetrennten KLT
+    assert [(z["Norm-Nr"], z["Menge"], z["Menge_gerundet"]) for z in dhl] == [(930730000, 700, True)]
+
+
+def test_angefangene_lage_ab_5_klt_bleibt_auf_der_palette(spez):
+    spez[("X", 1)] = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 30, "typ": 111444}
+    plan, dhl = pe._plane_abladestelle(_gruppe([(1, 17, 100, False), (2, 20, 100, False)]), "X")
+    assert {z["Norm-Nr"]: z["Menge"] for z in plan} == {1: 1700, 2: 2000}
+    assert dhl == []
+    assert all("Paletten Anzahl" not in z for z in plan)  # Formeln rechnen normal
+
+
+def test_mix_palette_aus_kleinen_artikeln_wird_sichtbar(spez):
+    # Beispiel 307K2: 3 + 2 + 1 KLT -> eine Mix-Palette 1 x 111444
+    spez[("307K2", 101182800)] = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 10, "typ": 111444}
+    gruppe = _gruppe([(101182800, 3, 650, True), (100327000, 2, 2100, False), (100326400, 1, 800, False)])
+    plan, dhl = pe._plane_abladestelle(gruppe, "307K2")
+    assert dhl == []
+    zeilen = {z["Norm-Nr"]: z for z in plan}
+    traeger = zeilen[101182800]
+    assert traeger["Paletten Typ"] == "111444" and traeger["Paletten Anzahl"] == 1
+    assert traeger["Hinweis"].startswith("Mix-Palette 3 + 2 + 1 = 6 KLT")
+    for n in (100327000, 100326400):
+        assert "Paletten Anzahl" not in zeilen[n] and "Paletten Typ" not in zeilen[n]
+        assert "Mix-Palette bei 101182800" in zeilen[n]["Hinweis"]
+    assert zeilen[100327000]["Menge"] == 4200
+
+
+def test_kleine_reste_ohne_partner_zu_dhl_ups(spez):
+    plan, dhl = pe._plane_abladestelle(_gruppe([(1, 2, 100, False), (2, 2, 100, False)]), "X")
+    assert plan == [] and {z["Norm-Nr"] for z in dhl} == {1, 2}
+
+
+def test_rest_eines_grossen_artikels_geht_zu_dhl_nicht_auf_mix(spez):
+    # 12 KLT (10/Lage): 10 auf eigener Palette, 2 -> DHL UPS. Die 3 + 2 KLT der
+    # kleinen Artikel ergeben zusammen eine Mix-Palette.
+    gruppe = _gruppe([(1, 12, 100, False), (2, 3, 100, False), (3, 2, 100, False)])
+    plan, dhl = pe._plane_abladestelle(gruppe, "X")
+    zeilen = {z["Norm-Nr"]: z for z in plan}
+    assert zeilen[1]["Menge"] == 1000 and "Paletten Anzahl" not in zeilen[1]
+    assert [(z["Norm-Nr"], z["Menge"]) for z in dhl] == [(1, 200)]
+    assert zeilen[2]["Paletten Anzahl"] == 1 and zeilen[2]["Paletten Typ"] == "111444"
+    assert "Paletten Anzahl" not in zeilen[3]
+
+
+def test_mix_palette_in_datei_geschrieben(spez):
+    positionen = _positionen([(A_ALT, "20A", "2026-11-05", 3), (A_NEU, "20A", "2026-11-05", 2)])
+    inhalt, kennzahlen, _ = pe.erstelle_planungsdatei(
+        positionen, _bestand({A_ALT: 3, A_NEU: 2}), None, PLANUNG, stichtag=STICHTAG
+    )
+    ws = openpyxl.load_workbook(io.BytesIO(inhalt))["Almanca"]
+    r = _zeilen(ws)[A_ALT]
+    assert ws.cell(row=r, column=14).value == "111444" and ws.cell(row=r, column=17).value == 1
+    assert ws.cell(row=r, column=26).value.startswith("Mix-Palette 3 + 2 = 5 KLT")
+    formel = ws.cell(row=_zeilen(ws)[A_NEU], column=14).value
+    assert getattr(formel, "text", formel).startswith("=")  # Formel bleibt
+    assert kennzahlen["mix_paletten"] == 1
+
+
+# --- Vorziehen ---------------------------------------------------------------
 
 def test_vorziehen_in_bestehende_planung(daten):
     positionen, bestand, zugang = daten
     # Bestehende Planung ohne A_ALT (z. B. erstellt, bevor die Ware da war)
     inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({A_NEU: 20}), zugang, PLANUNG, stichtag=STICHTAG)
-    ws_alt = openpyxl.load_workbook(io.BytesIO(inhalt))["Almanca"]
-    erw_alt = _zeilen(ws_alt)[A_ERW]
+    wb_alt = openpyxl.load_workbook(io.BytesIO(inhalt))
+    ws_alt = wb_alt["Almanca"]
     ws_alt.cell(row=_zeilen(ws_alt)[A_NEU], column=12, value="3000123456")  # manueller Eintrag
-
     puffer = io.BytesIO()
-    ws_alt.parent.save(puffer)
+    wb_alt.save(puffer)
     bestehend = puffer.getvalue()
 
     kandidaten = pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, bestehend)
     assert list(kandidaten["Norm-Nr"]) == [A_ALT]  # A_NEU kein Rueckstand, schon drin
     assert kandidaten.iloc[0]["Ziel"] == "Almanca"
 
-    neu = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(bestehend, kandidaten)))
-    ws = neu["Almanca"]
+    neu_bytes = pe.ergaenze_bestehende_planung(bestehend, kandidaten)
+    ws = openpyxl.load_workbook(io.BytesIO(neu_bytes))["Almanca"]
     zeilen = _zeilen(ws)
     assert ws.cell(row=zeilen[A_NEU], column=12).value == "3000123456"  # unveraendert
-    assert zeilen[A_ALT] > zeilen[A_NEU]
+    assert zeilen[A_ALT] == zeilen[A_NEU] + 2  # eine Leerzeile Abstand
     assert ws.cell(row=zeilen[A_ALT], column=6).font.color.rgb == pe.ROT
-    # gelber Bereich nach unten gerueckt, inkl. Formatierung und Kennzeichnung
-    assert zeilen[A_ERW] > zeilen[A_ALT] + 1
-    assert zeilen[A_ERW] > erw_alt
-    assert ws.cell(row=zeilen[A_ERW], column=26).value == pe.ERWARTET_MARKER
-    assert ws.cell(row=zeilen[A_ERW], column=1).fill.fgColor.rgb == "FFFFFF00"
-    assert ws.cell(row=erw_alt, column=1).fill.fgColor.rgb != "FFFFFF00" or erw_alt == zeilen[A_ERW]
-    # erneut angeboten wird nichts mehr
-    assert pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, pe.ergaenze_bestehende_planung(bestehend, kandidaten)).empty
+    assert ws.cell(row=zeilen[A_ALT], column=12).value.date() == pd.Timestamp("2026-10-20").date()
+    assert pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, neu_bytes).empty
 
 
-def test_vorziehen_kleine_menge_nach_dhl_ups(daten):
-    positionen, _, zugang = daten
-    positionen = _positionen([(A_ALT, "20A", "2026-10-20", 3)])
-    bestand = _bestand({A_ALT: 3})
+def test_vorziehen_teilt_angefangene_lage_ab(daten, spez):
+    _, _, zugang = daten
+    positionen = _positionen([(A_ALT, "20A", "2026-10-20", 13)])  # 10 KLT/Lage -> 10 + 3
     inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({}), zugang, PLANUNG, stichtag=STICHTAG)
-    kandidaten = pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, inhalt)
-    assert list(kandidaten["Ziel"]) == ["DHL UPS"]
-    ws = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, kandidaten)))["DHL UPS"]
-    r = _zeilen(ws)[A_ALT]
-    assert ws.cell(row=r, column=9).fill.fgColor.rgb == pe.GRUEN_FUELLUNG.fgColor.rgb
-    assert ws.cell(row=r, column=12).value.date() == pd.Timestamp("2026-10-20").date()
-
-
-def test_erwartet_info_nennt_nur_genutzte_nri():
-    rueck = _positionen([(A_NIX, "05C", "2026-10-15", 12), (A_NIX, "01D", "2026-10-30", 8)])
-    zugang = _zugang([(A_NIX, "NRI1", "2026-11-04", 12), (A_NIX, "NRI2", "2026-11-05", 30)])
-    zeilen = {z["Abladestelle"]: z for z in pe._erwartete_zeilen(rueck, zugang, PLANUNG)}
-    assert "NRI1" in zeilen["05C"]["Zugang Info"] and "NRI2" not in zeilen["05C"]["Zugang Info"]
-    assert zeilen["01D"]["Zugang Info"].startswith("NRI2")
-    assert zeilen["01D"]["Menge"] == 8
+    kandidaten = pe.vorzieh_kandidaten(positionen, _bestand({A_ALT: 13}), STICHTAG, inhalt)
+    assert list(zip(kandidaten["Ziel"], kandidaten["Packeinheiten"])) == [("Almanca", 10), ("DHL UPS", 3)]
+    wb = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, kandidaten)))
+    r = _zeilen(wb["DHL UPS"])[A_ALT]
+    assert wb["DHL UPS"].cell(row=r, column=9).fill.fgColor.rgb == pe.GRUEN_FUELLUNG.fgColor.rgb
+    assert wb["DHL UPS"].cell(row=r, column=12).value.date() == pd.Timestamp("2026-10-20").date()
+    assert wb["Almanca"].cell(row=_zeilen(wb["Almanca"])[A_ALT], column=9).value == 10
