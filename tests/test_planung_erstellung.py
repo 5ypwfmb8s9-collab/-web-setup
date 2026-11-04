@@ -340,3 +340,19 @@ def test_zweite_checkbox_schon_ausgebucht_und_farben(daten):
     # erneutes Speichern (Vorziehen) fuegt nichts doppelt ein
     neu = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, inhalt))))
     assert sum(1 for cf in neu["Almanca"].conditional_formatting for r in cf.rules if r.formula == [pe._block_status("AB")]) == 2
+
+
+def test_mix_paletten_unten_und_zusammenhaengend(spez):
+    # normale Artikel 1 (12 KLT) und 5 (10 KLT), dazwischen kleine Artikel fuer 2 Mix-Paletten
+    gruppe = _gruppe([(1, 12, 100, False), (2, 4, 100, False), (3, 3, 100, False), (4, 4, 100, False),
+                      (5, 10, 100, False), (6, 4, 100, False), (7, 2, 100, False)])
+    plan, _ = pe._plane_abladestelle(gruppe, "X")
+    reihenfolge = [z["Norm-Nr"] for z in plan]
+    assert reihenfolge[:2] == [1, 5]  # normale Paletten zuerst
+    mix = plan[2:]
+    assert all("Mix-Palette" in z["Hinweis"] for z in mix)
+    traeger = [i for i, z in enumerate(mix) if z.get("Paletten Anzahl") == 1]
+    assert traeger[0] == 0  # jede Mix-Palette beginnt mit ihrer Traegerzeile
+    for start, ende in zip(traeger, traeger[1:] + [len(mix)]):
+        bei = int(mix[start]["Norm-Nr"])
+        assert all(f"bei {bei}" in z["Hinweis"] for z in mix[start + 1:ende])

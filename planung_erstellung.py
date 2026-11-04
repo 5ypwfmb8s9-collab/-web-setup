@@ -316,6 +316,8 @@ def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
 #   werden nie gemischt (Anfrage 04.11.). KLT-Art wie Formel R der Vorlage
 #   (Stammdaten, sonst SAP Format). Unbekannte KLT-Art mischt nur mit
 #   ebenfalls unbekannter.
+# - Reihenfolge je Abladestelle: erst die normalen Paletten, darunter die
+#   Mix-Paletten, jede zusammenhaengend (Traegerzeile zuerst).
 # - Pro Artikel/Abladestelle hoechstens eine Zeile je Blatt.
 
 STANDARD_MIX_PALETTE = "111444"
@@ -384,6 +386,7 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
 
     # Mix-Paletten: groesster Rest zuerst als Grundstock, auffuellen bis eine Lage voll.
     reste.sort(key=lambda r: r["KLT"], reverse=True)
+    mix_zeilen: list[dict] = []  # Mix-Paletten, je Palette zusammenhaengend
     while reste:
         grundstock = reste.pop(0)
         kapazitaet = grundstock["pro_lage"]
@@ -421,9 +424,10 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
             else:
                 text = f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}"
             eintrag["Hinweis"] = " · ".join(t for t in (text, r["Hinweis"]) if t)
-            planung[r["Norm-Nr"]] = eintrag
+            mix_zeilen.append(eintrag)
 
-    planungszeilen = [planung[n] for n in gruppe["Norm-Nr"] if n in planung]
+    # Erst die normalen Paletten, darunter die Mix-Paletten (Anfrage 04.11.).
+    planungszeilen = [planung[n] for n in gruppe["Norm-Nr"] if n in planung] + mix_zeilen
     return planungszeilen, dhl_ups
 
 
