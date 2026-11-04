@@ -159,7 +159,7 @@ def test_mix_palette_aus_kleinen_artikeln_wird_sichtbar(spez):
     zeilen = {z["Norm-Nr"]: z for z in plan}
     traeger = zeilen[101182800]
     assert traeger["Paletten Typ"] == "111444" and traeger["Paletten Anzahl"] == 1
-    assert traeger["Hinweis"].startswith("Mix-Palette 3 + 2 + 1 = 6 KLT")
+    assert traeger["Hinweis"].startswith("Mix-Palette (003147) 3 + 2 + 1 = 6 KLT")
     for n in (100327000, 100326400):
         assert "Paletten Anzahl" not in zeilen[n] and "Paletten Typ" not in zeilen[n]
         assert "Mix-Palette bei 101182800" in zeilen[n]["Hinweis"]
@@ -235,3 +235,48 @@ def test_vorziehen_teilt_angefangene_lage_ab(daten, spez):
     assert wb["DHL UPS"].cell(row=r, column=9).fill.fgColor.rgb == pe.GRUEN_FUELLUNG.fgColor.rgb
     assert wb["DHL UPS"].cell(row=r, column=12).value.date() == pd.Timestamp("2026-10-20").date()
     assert wb["Almanca"].cell(row=_zeilen(wb["Almanca"])[A_ALT], column=9).value == 10
+
+
+# --- Anfrage 04.11. (2): KLT-Art, Bestandsgrenze, DHL UPS gruen -------------
+
+def test_mix_nur_bei_gleicher_klt_art(spez, monkeypatch):
+    monkeypatch.setattr(pe, "_KLT_ART_STAMM", {("X", 1): "003147", ("X", 2): "004147", ("X", 3): "003147"})
+    monkeypatch.setattr(pe, "_KLT_ART_SAP", {})
+    gruppe = _gruppe([(1, 3, 100, False), (2, 3, 100, False), (3, 2, 100, False)])
+    plan, dhl = pe._plane_abladestelle(gruppe, "X")
+    assert {z["Norm-Nr"] for z in plan} == {1, 3}  # 3 + 2 KLT 003147 -> Mix
+    assert [z["Norm-Nr"] for z in dhl] == [2]       # 004147 nicht dazu
+    assert "(003147)" in {z["Norm-Nr"]: z for z in plan}[1]["Hinweis"]
+
+
+def test_klt_art_aus_vorlage_wie_formel_r():
+    assert pe._klt_art("15501", 100217000) == "003147"
+    assert set(pe._KLT_ART_STAMM.values()) <= {"003147", "004147"}
+    assert "004147" in set(pe._KLT_ART_STAMM.values())
+
+
+def test_aufrunden_nie_ueber_bestand(spez):
+    # Fuellmenge 1 im Test -> Rundung greift nicht; deshalb Fuellmenge direkt setzen
+    gerundet = pd.DataFrame([
+        {"Abladestelle": "A", "Norm-Nr": 7, "Ladedatum": pd.Timestamp("2026-10-01"), "Menge urspruenglich": 2700.0,
+         "Fuellmenge": 2800.0, "Packeinheiten": 1, "Menge": 2800.0, "Menge_gerundet": True, "VW-Nr": ""},
+        {"Abladestelle": "B", "Norm-Nr": 7, "Ladedatum": pd.Timestamp("2026-10-02"), "Menge urspruenglich": 2700.0,
+         "Fuellmenge": 2800.0, "Packeinheiten": 1, "Menge": 2800.0, "Menge_gerundet": True, "VW-Nr": ""},
+        {"Abladestelle": "C", "Norm-Nr": 7, "Ladedatum": pd.Timestamp("2026-10-03"), "Menge urspruenglich": 2600.0,
+         "Fuellmenge": 2800.0, "Packeinheiten": 1, "Menge": 2800.0, "Menge_gerundet": True, "VW-Nr": ""},
+    ])
+    # 8.000 Stk ergaeben aufgerundet 3 KLT = 8.400, nutzbar sind aber nur 2 KLT (5.600)
+    begrenzt, zusatz = pe._begrenze_auf_bestand(gerundet, {7: 5600})
+    assert begrenzt["Menge"].sum() == 5600
+    assert list(begrenzt["Abladestelle"]) == ["A", "B"]  # aeltestes Ladedatum zuerst
+    assert list(zusatz["Abladestelle"]) == ["C"] and zusatz["Offene Menge"].iloc[0] == 2600
+
+
+def test_dhl_ups_zeile_a_bis_t_gruen(daten):
+    positionen = _positionen([(A_ALT, "20A", "2026-11-05", 3)])
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({A_ALT: 3}), None, PLANUNG, stichtag=STICHTAG)
+    ws = openpyxl.load_workbook(io.BytesIO(inhalt))["DHL UPS"]
+    r = _zeilen(ws)[A_ALT]
+    gruen = pe.GRUEN_FUELLUNG.fgColor.rgb
+    assert all(ws.cell(row=r, column=c).fill.fgColor.rgb == gruen for c in range(1, 21))
+    assert ws.cell(row=r, column=21).fill.fgColor.rgb != gruen

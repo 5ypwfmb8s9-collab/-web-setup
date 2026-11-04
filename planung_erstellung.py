@@ -39,9 +39,12 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   Spalte I = Menge. Sortiert nach Abladestelle aufsteigend, Leerzeile
   zwischen Abladestellen-Gruppen.
 - Menge wird auf das naechste volle Vielfache der Fuellmenge aufgerundet
-  (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift.
-- Packeinheiten < 5 je Artikel -> komplette Zeile zu "DHL UPS" (gruen
-  ausgefuellt), da zu wenig fuer eine eigene Palette.
+  (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift - aber je
+  Artikel nie ueber die nutzbaren KLT hinaus (sonst je Abladestelle bis zu
+  einer KLT zu viel). Reicht der Bestand nicht, wird die juengste Zeile
+  gekuerzt ("Bestand reicht nur fuer X KLT" in Z), der Rest wird Rueckstand.
+- Packeinheiten < 5 je Artikel -> komplette Zeile zu "DHL UPS" (A bis T
+  gruen ausgefuellt), da zu wenig fuer eine eigene Palette.
 - Artikel mit < 5 KLT werden je Abladestelle
   versucht mit anderen Artikeln zu einer Mix-Palette zusammenzulegen
   (bis zur Lagen-Kapazitaet lt. Stammdaten: 10 bei Standard-Paletten,
@@ -150,6 +153,51 @@ def _lade_palettenspezifikation() -> dict:
 
 _PALETTENSPEZIFIKATION = _lade_palettenspezifikation()
 
+
+def _lade_klt_art() -> tuple[dict, dict]:
+    """KLT-Art je (Lagerort, Norm-Nr) - dieselbe Reihenfolge wie Formel R der
+    Vorlage: zuerst Stammdaten Spalte "KLT Art", sonst "SAP Format Neu"
+    (Lagerort -> SAP-Nr ueber "Maliteslimalan", Ambalajlama Cesidi 3:
+    K810 = 003147 klein, K811 = 004147 gross). Rueckgabe (stammdaten, sap)."""
+    def code(wert) -> str:
+        try:
+            return f"{int(float(wert)):06d}"
+        except (TypeError, ValueError):
+            return ""
+    stamm_art, sap_art = {}, {}
+    try:
+        stamm = pd.read_excel(VORLAGE_DATEI, sheet_name="Stammdaten")
+        for lagerort, norm_nr, art in zip(stamm["Lagerort"], stamm["Norm NR."], stamm["KLT Art"]):
+            norm_nr = pd.to_numeric(norm_nr, errors="coerce")  # z. B. "B1017" ueberspringen
+            if pd.notna(lagerort) and pd.notna(norm_nr) and code(art):
+                stamm_art.setdefault((str(lagerort).strip(), int(norm_nr)), code(art))
+        mali = pd.read_excel(VORLAGE_DATEI, sheet_name="Maliteslimalan")
+        sap_nr = {str(a).strip(): int(b) for a, b in zip(mali.iloc[:, 0], mali.iloc[:, 1]) if pd.notna(a) and pd.notna(b)}
+        sap = pd.read_excel(VORLAGE_DATEI, sheet_name="SAP Format Neu (Endtabelle)")
+        sap = sap[sap.iloc[:, 2] == 3]
+        codes = {"K810": "003147", "K811": "004147"}
+        je_sap = {}
+        for a, b, c in zip(sap.iloc[:, 0], sap.iloc[:, 1], sap.iloc[:, 4]):
+            nr, norm_nr = pd.to_numeric(a, errors="coerce"), pd.to_numeric(b, errors="coerce")
+            if pd.notna(nr) and pd.notna(norm_nr):  # Materialnummern mit Buchstaben ueberspringen
+                je_sap.setdefault((int(nr), int(norm_nr)), codes.get(str(c).strip(), ""))
+        for lagerort, nr in sap_nr.items():
+            for (s_nr, norm_nr), art in je_sap.items():
+                if s_nr == nr and art:
+                    sap_art.setdefault((lagerort, norm_nr), art)
+    except (FileNotFoundError, ValueError, KeyError):
+        pass
+    return stamm_art, sap_art
+
+
+_KLT_ART_STAMM, _KLT_ART_SAP = _lade_klt_art()
+
+
+def _klt_art(lagerort, norm_nr) -> str:
+    """"003147" (klein), "004147" (gross) oder "" (unbekannt)."""
+    schluessel = (str(lagerort).strip(), int(norm_nr))
+    return _KLT_ART_STAMM.get(schluessel) or _KLT_ART_SAP.get(schluessel, "")
+
 # Standardwert, falls ein (Lagerort, Norm-Nr) nicht in Stammdaten vorkommt.
 _STANDARD_PALETTE = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 10, "typ": ""}
 
@@ -196,6 +244,42 @@ def _gruppiere_je_abladestelle_artikel(df: pd.DataFrame) -> pd.DataFrame:
 
 # --- Mengen aufrunden auf volle Füllmenge-Einheiten -------------------------
 
+def _begrenze_auf_bestand(gerundet: pd.DataFrame, nutzbar: dict | None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Aufrunden auf volle KLT darf nie mehr KLT verplanen, als physisch
+    nutzbar sind (Anfrage 04.11.: 940315000 - je Abladestelle aufgerundet,
+    in Summe mehr eingeplant als Bestand). Je Artikel werden die nutzbaren KLT
+    nach Dringlichkeit (aeltestes Ladedatum zuerst) verteilt; reicht es fuer
+    eine Zeile nicht, wird sie gekuerzt (Hinweis in Z) und der fehlende Teil
+    geht als Rueckstand zurueck. Rueckgabe (gekuerzt, zusaetzliche_rueckstaende)."""
+    leer = pd.DataFrame(columns=["Abladestelle", "Norm-Nr", "Offene Menge", "Ladedatum", "VW-Nr"])
+    if nutzbar is None or gerundet.empty:
+        return gerundet, leer
+    df = gerundet.sort_values(["Ladedatum", "Abladestelle"]).copy()
+    df["Bestandshinweis"] = None
+    frei_klt: dict = {}
+    zusatz = []
+    for idx, r in df.iterrows():
+        norm_nr, f = r["Norm-Nr"], r["Fuellmenge"]
+        if norm_nr not in frei_klt:
+            frei_klt[norm_nr] = int(nutzbar.get(norm_nr, 0) // f) if f else 0
+        klt = min(int(r["Packeinheiten"]), frei_klt[norm_nr])
+        frei_klt[norm_nr] -= klt
+        if klt == int(r["Packeinheiten"]):
+            continue
+        df.loc[idx, "Packeinheiten"] = klt
+        df.loc[idx, "Menge"] = klt * f
+        df.loc[idx, "Menge_gerundet"] = klt * f != r["Menge urspruenglich"]
+        df.loc[idx, "Bestandshinweis"] = f"Bestand reicht nur für {klt} KLT"
+        fehlt = r["Menge urspruenglich"] - klt * f
+        if fehlt > 0:
+            zusatz.append({
+                "Abladestelle": r["Abladestelle"], "Norm-Nr": norm_nr, "Offene Menge": fehlt,
+                "Ladedatum": r["Ladedatum"], "VW-Nr": r.get("VW-Nr", ""),
+            })
+    df = df[df["Packeinheiten"] > 0].sort_values(["Abladestelle", "Norm-Nr"]).reset_index(drop=True)
+    return df, (pd.DataFrame(zusatz) if zusatz else leer)
+
+
 def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
     df = gruppiert.copy()
     df["Fuellmenge"] = df["Norm-Nr"].apply(_fuellmenge)
@@ -224,9 +308,19 @@ def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
 #   Mix-Paletten: sonst stuende ihre Menge (nur eine Zeile je Artikel) in der
 #   Zeile mit der eigenen Palette, und die Excel-Formel Q wuerde sie dort
 #   mitzaehlen. So bleiben N/Q in allen Zeilen mit eigener Palette Formeln.
+# - Mix-Paletten nur aus KLT GLEICHER Art: 003147 (klein) und 004147 (gross)
+#   werden nie gemischt (Anfrage 04.11.). KLT-Art wie Formel R der Vorlage
+#   (Stammdaten, sonst SAP Format). Unbekannte KLT-Art mischt nur mit
+#   ebenfalls unbekannter.
 # - Pro Artikel/Abladestelle hoechstens eine Zeile je Blatt.
 
 STANDARD_MIX_PALETTE = "111444"
+
+
+def _hinweis_text(zeile):
+    wert = zeile.get("Bestandshinweis")
+    return wert if isinstance(wert, str) and wert else None
+
 BEKANNTE_PALETTEN = {"111444", "VWPAL", "99C159"}
 
 
@@ -266,18 +360,22 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
                 # Aufrundung steckt in der letzten KLT - die gehoert zum Rest,
                 # falls einer abgetrennt wurde.
                 "Menge_gerundet": bool(zeile["Menge_gerundet"]) and not teil["rest"],
+                "Hinweis": _hinweis_text(zeile),
             }
         if teil["rest"] and teil["bleibt"]:
             # Angefangene Lage eines grossen Artikels -> DHL UPS.
             dhl_ups.append({
                 "Norm-Nr": zeile["Norm-Nr"], "Menge": teil["rest"] * fm,
                 "Menge_gerundet": bool(zeile["Menge_gerundet"]),
+                "Hinweis": _hinweis_text(zeile),
             })
         elif teil["rest"]:
             reste.append({
                 "Norm-Nr": zeile["Norm-Nr"], "KLT": teil["rest"], "Fuellmenge": fm,
                 "Menge_gerundet": bool(zeile["Menge_gerundet"]),
                 "pro_lage": teil["pro_lage"], "typ": teil["typ"],
+                "klt_art": _klt_art(lagerort, zeile["Norm-Nr"]),
+                "Hinweis": _hinweis_text(zeile),
             })
 
     # Mix-Paletten: groesster Rest zuerst als Grundstock, auffuellen bis eine Lage voll.
@@ -287,7 +385,7 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
         kapazitaet = grundstock["pro_lage"]
         mix, summe, uebrig = [grundstock], grundstock["KLT"], []
         for kandidat in reste:
-            if summe + kandidat["KLT"] <= kapazitaet:
+            if kandidat["klt_art"] == grundstock["klt_art"] and summe + kandidat["KLT"] <= kapazitaet:
                 mix.append(kandidat)
                 summe += kandidat["KLT"]
             else:
@@ -298,12 +396,13 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
             for r in mix:
                 dhl_ups.append({
                     "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
-                    "Menge_gerundet": r["Menge_gerundet"],
+                    "Menge_gerundet": r["Menge_gerundet"], "Hinweis": r["Hinweis"],
                 })
             continue
 
         typ = grundstock["typ"] if grundstock["typ"] in BEKANNTE_PALETTEN else STANDARD_MIX_PALETTE
-        beschreibung = "Mix-Palette " + " + ".join(f"{r['KLT']}" for r in mix) + f" = {summe} KLT"
+        art = f" ({grundstock['klt_art']})" if grundstock["klt_art"] else ""
+        beschreibung = f"Mix-Palette{art} " + " + ".join(f"{r['KLT']}" for r in mix) + f" = {summe} KLT"
         for i, r in enumerate(mix):
             eintrag = {
                 "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
@@ -314,9 +413,10 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
                 # Formeln N/Q ergaeben hier "-"/0, weil < 5 KLT je Zeile).
                 eintrag["Paletten Typ"] = typ
                 eintrag["Paletten Anzahl"] = 1
-                eintrag["Hinweis"] = f"{beschreibung} (1 x {typ} in dieser Zeile)"
+                text = f"{beschreibung} (1 x {typ} in dieser Zeile)"
             else:
-                eintrag["Hinweis"] = f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}"
+                text = f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}"
+            eintrag["Hinweis"] = " · ".join(t for t in (text, r["Hinweis"]) if t)
             planung[r["Norm-Nr"]] = eintrag
 
     planungszeilen = [planung[n] for n in gruppe["Norm-Nr"] if n in planung]
@@ -333,13 +433,16 @@ def _teilmenge_kombis(rueckstand: pd.DataFrame, planbar: pd.DataFrame) -> set:
     return in_rueckstand & in_planbar
 
 
-def _baue_planung_und_versand(planbar: pd.DataFrame) -> tuple[list[dict], list[dict]]:
-    """Komplette Planbar-Menge -> (Almanca-Zeilen, DHL/UPS-Zeilen), je
-    Abladestelle gruppiert und sortiert, mit Mix-Paletten-Logik."""
+def _baue_planung_und_versand(
+    planbar: pd.DataFrame, nutzbar: dict | None = None
+) -> tuple[list[dict], list[dict], pd.DataFrame]:
+    """Komplette Planbar-Menge -> (Almanca-Zeilen, DHL/UPS-Zeilen,
+    zusaetzliche Rueckstaende durch Bestandsbegrenzung), je Abladestelle
+    gruppiert und sortiert, mit Mix-Paletten-Logik."""
     if planbar.empty:
-        return [], []
+        return [], [], _begrenze_auf_bestand(planbar, None)[1]
     gruppiert = _gruppiere_je_abladestelle_artikel(planbar)
-    gerundet = _runde_auf_fuellmenge(gruppiert)
+    gerundet, zusatz_rueckstand = _begrenze_auf_bestand(_runde_auf_fuellmenge(gruppiert), nutzbar)
 
     alle_planungszeilen: list[dict] = []
     alle_dhl_ups_zeilen: list[dict] = []
@@ -351,7 +454,7 @@ def _baue_planung_und_versand(planbar: pd.DataFrame) -> tuple[list[dict], list[d
         for zeile in dhl_ups_zeilen:
             zeile["Abladestelle"] = abladestelle
             alle_dhl_ups_zeilen.append(zeile)
-    return alle_planungszeilen, alle_dhl_ups_zeilen
+    return alle_planungszeilen, alle_dhl_ups_zeilen, zusatz_rueckstand
 
 
 # --- Rueckstand-Kennzeichnung / erwartete Zugaenge --------------------------
@@ -451,7 +554,7 @@ def _schreibe_zeilen(
         if rot_wenn_gerundet and eintrag.get("Menge_gerundet"):
             menge_zelle.font = _farbige_schrift(menge_zelle.font, ROT)
         if gruen_fuellung:
-            for spalte in (SPALTE_LAGERORT, SPALTE_NORM_NR, SPALTE_MENGE):
+            for spalte in range(1, GELB_BIS_SPALTE + 1):  # A bis T
                 ws.cell(row=zeile_nr, column=spalte).fill = GRUEN_FUELLUNG
         if eintrag.get("Paletten Typ"):
             ws.cell(row=zeile_nr, column=SPALTE_PALETTEN_TYP, value=eintrag["Paletten Typ"])
@@ -586,7 +689,10 @@ def erstelle_planungsdatei(
     """stichtag: Datum der SAP-Daten. Eingeplante Mengen mit Ladedatum davor
     waren Rueckstand und werden markiert (VW-Nr rot, Ladedatum in L)."""
     rueckstand, planbar = _splitte_auftraege(positionen, bestand_je_charge, planungsdatum)
-    planungszeilen, dhl_ups_zeilen = _baue_planung_und_versand(planbar)
+    nutzbar = bestand_logik.nutzbarer_bestand_je_artikel(bestand_je_charge, config.BESTAND_VERFUEGBAR)
+    planungszeilen, dhl_ups_zeilen, zusatz_rueckstand = _baue_planung_und_versand(planbar, nutzbar)
+    if not zusatz_rueckstand.empty:
+        rueckstand = pd.concat([rueckstand, zusatz_rueckstand], ignore_index=True)
     palette_gefunden, palette_gesamt = _palettenspezifikation_abdeckung(planbar)
     zugang_warteschlangen = _zugang_warteschlangen_je_artikel(zugang_vorbereitet)
     teilmengen = _teilmenge_kombis(rueckstand, planbar)
@@ -687,7 +793,10 @@ def vorzieh_kandidaten(
     spalten = ["Abladestelle", "Norm-Nr", "VW-Nr", "Menge", "Packeinheiten", "Ladedatum", "Ziel", "Menge_gerundet"]
     if planbar.empty:
         return pd.DataFrame(columns=spalten)
-    kandidaten = _runde_auf_fuellmenge(_gruppiere_je_abladestelle_artikel(planbar))
+    nutzbar = bestand_logik.nutzbarer_bestand_je_artikel(bestand_je_charge, config.BESTAND_VERFUEGBAR)
+    kandidaten, _ = _begrenze_auf_bestand(
+        _runde_auf_fuellmenge(_gruppiere_je_abladestelle_artikel(planbar)), nutzbar
+    )
     if bestehende_datei:
         vorhanden = vorhandene_kombinationen(bestehende_datei)
         schon_drin = [
