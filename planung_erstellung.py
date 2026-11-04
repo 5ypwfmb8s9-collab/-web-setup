@@ -772,6 +772,17 @@ ORANGE_SCHON_AUSGEBUCHT = PatternFill(patternType="solid", fgColor="FFFFC000", b
 SCHON_AUSGEBUCHT_SPALTE = "AB"
 
 
+def _block_status(spalte: str) -> str:
+    """Formel "Haken gesetzt" fuer bedingte Formatierung, die auch bei
+    VERBUNDENEN Zellen funktioniert (z. B. W5:W12 fuer einen Lagerauftrag
+    ueber mehrere Zeilen): verbundene Zellen unter der ersten sind leer -
+    jede Zeile nimmt deshalb den letzten nicht leeren Wert der Spalte bis zu
+    sich selbst, also den Haken ihres Blocks. Unverbundene Zellen enthalten
+    immer WAHR/FALSCH und nehmen damit ihren eigenen Wert."""
+    z = ERSTE_DATENZEILE
+    return f"LOOKUP(2,1/(LEN(${spalte}${z}:${spalte}{z})>0),${spalte}${z}:${spalte}{z})=TRUE"
+
+
 def _status_checkboxen_und_farben(ws) -> None:
     """Zweite Checkbox "Schon ausgebucht" in Spalte AB (gleiche Zeilen wie die
     Checkboxen in W) und Faerbung von W + T (Gewicht):
@@ -803,9 +814,9 @@ def _status_checkboxen_und_farben(ws) -> None:
         for regel in cf.rules:
             regel.priority = (regel.priority or 0) + 2
     for bereich in (f"T{ERSTE_DATENZEILE}:T{letzte}", f"W{ERSTE_DATENZEILE}:W{letzte}"):
-        orange = FormulaRule(formula=[f"${SCHON_AUSGEBUCHT_SPALTE}{ERSTE_DATENZEILE}=TRUE"],
+        orange = FormulaRule(formula=[_block_status(SCHON_AUSGEBUCHT_SPALTE)],
                              fill=ORANGE_SCHON_AUSGEBUCHT, stopIfTrue=True)
-        gelb = FormulaRule(formula=[f"$W{ERSTE_DATENZEILE}=TRUE"], fill=GELB_AUSGEBUCHT, stopIfTrue=True)
+        gelb = FormulaRule(formula=[_block_status("W")], fill=GELB_AUSGEBUCHT, stopIfTrue=True)
         ws.conditional_formatting.add(bereich, orange)
         ws.conditional_formatting.add(bereich, gelb)
         orange.priority, gelb.priority = 1, 2

@@ -328,7 +328,7 @@ def test_zweite_checkbox_schon_ausgebucht_und_farben(daten):
         ws = wb[blatt]
         assert ws["AB4"].value == "Schon ausgebucht" and ws["AB5"].value is False
         regeln = sorted(((r.priority, r.formula[0], str(cf.sqref)) for cf in ws.conditional_formatting for r in cf.rules), key=lambda x: x[0])
-        assert {(p, f) for p, f, _ in regeln[:4]} == {(1, "$AB5=TRUE"), (2, "$W5=TRUE")}
+        assert {(p, f) for p, f, _ in regeln[:4]} == {(1, pe._block_status("AB")), (2, pe._block_status("W"))}
         assert {b.split(":")[0] for _, _, b in regeln[:4]} == {"T5", "W5"}
     assert "$AB$5" in wb["Almanca"]["X2"].value
     z = zipfile.ZipFile(io.BytesIO(inhalt))
@@ -339,4 +339,4 @@ def test_zweite_checkbox_schon_ausgebucht_und_farben(daten):
     assert len(ab) > 600 and all(pe.CHECKBOX_URI in xfs[int(s)] for _, s in ab)
     # erneutes Speichern (Vorziehen) fuegt nichts doppelt ein
     neu = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, inhalt))))
-    assert sum(1 for cf in neu["Almanca"].conditional_formatting for r in cf.rules if r.formula == ["$AB5=TRUE"]) == 2
+    assert sum(1 for cf in neu["Almanca"].conditional_formatting for r in cf.rules if r.formula == [pe._block_status("AB")]) == 2
