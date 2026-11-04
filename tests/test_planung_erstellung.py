@@ -316,3 +316,27 @@ def test_checkboxen_in_spalte_w_bleiben_erhalten(daten):
     neu = zipfile.ZipFile(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, kandidaten) if len(kandidaten) else inhalt))
     assert pe.CHECKBOX_URI in neu.read("xl/styles.xml").decode()
     assert neu.read("xl/_rels/workbook.xml.rels").decode().count(pe.FPB_REL_TYP) == 1
+
+
+def test_zweite_checkbox_schon_ausgebucht_und_farben(daten):
+    import re
+    import zipfile
+    positionen, bestand, zugang = daten
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, bestand, zugang, PLANUNG, stichtag=STICHTAG)
+    wb = openpyxl.load_workbook(io.BytesIO(inhalt))
+    for blatt in ("Almanca", "DHL UPS"):
+        ws = wb[blatt]
+        assert ws["AB4"].value == "Schon ausgebucht" and ws["AB5"].value is False
+        regeln = sorted(((r.priority, r.formula[0], str(cf.sqref)) for cf in ws.conditional_formatting for r in cf.rules), key=lambda x: x[0])
+        assert {(p, f) for p, f, _ in regeln[:4]} == {(1, "$AB5=TRUE"), (2, "$W5=TRUE")}
+        assert {b.split(":")[0] for _, _, b in regeln[:4]} == {"T5", "W5"}
+    assert "$AB$5" in wb["Almanca"]["X2"].value
+    z = zipfile.ZipFile(io.BytesIO(inhalt))
+    styles = z.read("xl/styles.xml").decode()
+    xfs = re.findall(r"<xf\b[^>]*?/>|<xf\b[^>]*?>.*?</xf>", re.search(r"<cellXfs[^>]*>(.*?)</cellXfs>", styles, re.S).group(1), re.S)
+    xml = z.read(pe._blatt_pfade({n: z.read(n) for n in ("xl/workbook.xml", "xl/_rels/workbook.xml.rels")})["Almanca"]).decode()
+    ab = re.findall(r'<c r="AB(\d+)" s="(\d+)" t="b"', xml)
+    assert len(ab) > 600 and all(pe.CHECKBOX_URI in xfs[int(s)] for _, s in ab)
+    # erneutes Speichern (Vorziehen) fuegt nichts doppelt ein
+    neu = openpyxl.load_workbook(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, inhalt))))
+    assert sum(1 for cf in neu["Almanca"].conditional_formatting for r in cf.rules if r.formula == ["$AB5=TRUE"]) == 2

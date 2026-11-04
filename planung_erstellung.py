@@ -97,6 +97,7 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 import streamlit as st
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
 
 import bestand_logik
@@ -716,6 +717,8 @@ def erstelle_planungsdatei(
         rueckstand_seit=rueckstand_seit,
     )
     rueckstand_mit_zugang = _schreibe_rueckstaende(wb["Rückstände"], rueckstand_anzeige)
+    for blatt in ("Almanca", "DHL UPS"):
+        _status_checkboxen_und_farben(wb[blatt])
     wb["Almanca"]["M2"] = pd.Timestamp(planungsdatum).strftime("%d.%m. VW")
 
     puffer = io.BytesIO()
@@ -756,9 +759,61 @@ CHECKBOX_EXT = (
     '<xfpb:xfComplement i="0"/></ext></extLst>'
 )
 CHECKBOX_BLAETTER = ("Almanca", "DHL UPS", "Rückstände")
+# Spalten mit Checkboxen je Blatt: W "Status/Ausgebucht" (Vorlage) und AB
+# "Schon ausgebucht" (zweite Checkbox, Anfrage 04.11.).
+CHECKBOX_SPALTEN = {"Almanca": ("W", "AB"), "DHL UPS": ("W", "AB"), "Rückstände": ("W",)}
 FPB_PFAD = "xl/featurePropertyBag/featurePropertyBag.xml"
 FPB_CONTENT_TYPE = "application/vnd.ms-excel.featurepropertybag+xml"
 FPB_REL_TYP = "http://schemas.microsoft.com/office/2022/11/relationships/FeaturePropertyBag"
+
+
+GELB_AUSGEBUCHT = PatternFill(patternType="solid", fgColor="FFFFFF00", bgColor="FFFFFF00")
+ORANGE_SCHON_AUSGEBUCHT = PatternFill(patternType="solid", fgColor="FFFFC000", bgColor="FFFFC000")
+SCHON_AUSGEBUCHT_SPALTE = "AB"
+
+
+def _status_checkboxen_und_farben(ws) -> None:
+    """Zweite Checkbox "Schon ausgebucht" in Spalte AB (gleiche Zeilen wie die
+    Checkboxen in W) und Faerbung von W + T (Gewicht):
+    Haken in W -> gelb (ausgebucht), Haken in AB -> orange (schon ausgebucht,
+    hat Vorrang). Der Zaehler "Ausgebucht" (X2) zaehlt beide Haken.
+    Idempotent: ist AB4 schon beschriftet, passiert nichts."""
+    if ws["AB4"].value:
+        return
+    zeilen = [r for r in range(ERSTE_DATENZEILE, ws.max_row + 1) if isinstance(ws.cell(row=r, column=23).value, bool)]
+    if not zeilen:
+        return
+    letzte = zeilen[-1]
+    kopf = ws["AB4"]
+    kopf.value = "Schon ausgebucht"
+    _kopiere_stil(ws["W4"], kopf)
+    kopf.font = copy(ws["W4"].font)
+    kopf.border = copy(ws["W4"].border)
+    kopf.alignment = copy(ws["W4"].alignment)
+    ws.column_dimensions["AB"].width = max(ws.column_dimensions["W"].width or 15, 16)
+    for r in zeilen:
+        ziel = ws.cell(row=r, column=28)
+        if not isinstance(ziel.value, bool):
+            ziel.value = False
+        quelle = ws.cell(row=r, column=23)
+        ziel.font, ziel.border, ziel.alignment = copy(quelle.font), copy(quelle.border), copy(quelle.alignment)
+
+    # Orange (AB) vor Gelb (W) vor den bisherigen Regeln der Vorlage.
+    for cf in ws.conditional_formatting:
+        for regel in cf.rules:
+            regel.priority = (regel.priority or 0) + 2
+    for bereich in (f"T{ERSTE_DATENZEILE}:T{letzte}", f"W{ERSTE_DATENZEILE}:W{letzte}"):
+        orange = FormulaRule(formula=[f"${SCHON_AUSGEBUCHT_SPALTE}{ERSTE_DATENZEILE}=TRUE"],
+                             fill=ORANGE_SCHON_AUSGEBUCHT, stopIfTrue=True)
+        gelb = FormulaRule(formula=[f"$W{ERSTE_DATENZEILE}=TRUE"], fill=GELB_AUSGEBUCHT, stopIfTrue=True)
+        ws.conditional_formatting.add(bereich, orange)
+        ws.conditional_formatting.add(bereich, gelb)
+        orange.priority, gelb.priority = 1, 2
+    if ws.title == "Almanca":
+        ws["X2"] = (
+            f"=SUMPRODUCT(--(LEFT($L$5:$L${letzte},1)=\"3\"),"
+            f"--((($W$5:$W${letzte}=TRUE)+($AB$5:$AB${letzte}=TRUE))>0))"
+        )
 
 
 def _lade_feature_property_bag() -> bytes | None:
@@ -817,10 +872,10 @@ def _stelle_checkboxen_wieder_her(inhalt: bytes) -> bytes:
         return zuordnung[alt]
 
     def ersetze(treffer):
-        zeile, stil = int(treffer.group(1)), treffer.group(3)
+        spalte, zeile, stil = treffer.group(1), int(treffer.group(2)), treffer.group(4)
         if zeile < ERSTE_DATENZEILE:
             return treffer.group(0)
-        return f'<c r="W{zeile}" s="{checkbox_format(int(stil or 0))}" t="b"'
+        return f'<c r="{spalte}{zeile}" s="{checkbox_format(int(stil or 0))}" t="b"'
 
     geaendert = False
     pfade = _blatt_pfade(teile)
@@ -829,7 +884,8 @@ def _stelle_checkboxen_wieder_her(inhalt: bytes) -> bytes:
         if not pfad or pfad not in teile:
             continue
         xml = teile[pfad].decode("utf-8")
-        neu = re.sub(r'<c r="W(\d+)"( s="(\d+)")? t="b"', ersetze, xml)
+        spalten = "|".join(CHECKBOX_SPALTEN.get(blatt, ("W",)))
+        neu = re.sub(rf'<c r="({spalten})(\d+)"( s="(\d+)")? t="b"', ersetze, xml)
         if neu != xml:
             teile[pfad] = neu.encode("utf-8")
             geaendert = True
@@ -974,6 +1030,9 @@ def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
             ws, zeilen, rot_wenn_gerundet=(blatt == "Almanca"), gruen_fuellung=(blatt == "DHL UPS"),
             rueckstand_seit=seit, start_zeile=start,
         )
+    for blatt in ("Almanca", "DHL UPS"):
+        if blatt in wb.sheetnames:
+            _status_checkboxen_und_farben(wb[blatt])
     puffer = io.BytesIO()
     wb.save(puffer)
     return _stelle_checkboxen_wieder_her(puffer.getvalue())
