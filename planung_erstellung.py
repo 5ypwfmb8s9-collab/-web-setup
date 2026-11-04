@@ -86,8 +86,11 @@ geben, falls nicht.
 """
 from __future__ import annotations
 
+import html
 import io
 import math
+import re
+import zipfile
 from copy import copy
 from pathlib import Path
 
@@ -717,7 +720,7 @@ def erstelle_planungsdatei(
 
     puffer = io.BytesIO()
     wb.save(puffer)
-    puffer.seek(0)
+    puffer = io.BytesIO(_stelle_checkboxen_wieder_her(puffer.getvalue()))
 
     kennzahlen = {
         "rueckstand_artikel": rueckstand["Norm-Nr"].nunique(),
@@ -735,6 +738,127 @@ def erstelle_planungsdatei(
         "palette_spezifikation_gesamt": palette_gesamt,
     }
     return puffer.getvalue(), kennzahlen, rueckstand_anzeige
+
+
+# --- Excel-Checkboxen (Spalte W "Status") erhalten ---------------------------
+#
+# Die Vorlage hat in Spalte W ab Zeile 5 echte Excel-Checkboxen (neues
+# Excel-Feature "Zellen-Kontrollkaestchen", gespeichert als Feature Property
+# Bag + Zellformat-Erweiterung). openpyxl kennt das nicht und verwirft es beim
+# Speichern - uebrig bleibt der nackte Wert FALSCH. Nach dem Speichern wird
+# das Format daher direkt im XLSX wieder eingesetzt (Teil + Beziehung +
+# Content-Type aus der Vorlage, eigenes Zellformat fuer die W-Zellen).
+
+CHECKBOX_URI = "{C7286773-470A-42A8-94C5-96B5CB345126}"
+CHECKBOX_EXT = (
+    f'<extLst><ext uri="{CHECKBOX_URI}" '
+    'xmlns:xfpb="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag">'
+    '<xfpb:xfComplement i="0"/></ext></extLst>'
+)
+CHECKBOX_BLAETTER = ("Almanca", "DHL UPS", "Rückstände")
+FPB_PFAD = "xl/featurePropertyBag/featurePropertyBag.xml"
+FPB_CONTENT_TYPE = "application/vnd.ms-excel.featurepropertybag+xml"
+FPB_REL_TYP = "http://schemas.microsoft.com/office/2022/11/relationships/FeaturePropertyBag"
+
+
+def _lade_feature_property_bag() -> bytes | None:
+    try:
+        with zipfile.ZipFile(VORLAGE_DATEI) as z:
+            return z.read(FPB_PFAD)
+    except (FileNotFoundError, KeyError, zipfile.BadZipFile):
+        return None
+
+
+def _blatt_pfade(teile: dict) -> dict:
+    """Blattname -> Pfad im Zip (z. B. "xl/worksheets/sheet1.xml")."""
+    wb = teile["xl/workbook.xml"].decode("utf-8")
+    rels = teile["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    ziele = {}
+    for rel in re.findall(r"<Relationship\b[^>]*>", rels):
+        rid = re.search(r'\bId="([^"]+)"', rel)
+        ziel = re.search(r'\bTarget="([^"]+)"', rel)
+        if rid and ziel:
+            ziele[rid.group(1)] = ziel.group(1)
+    pfade = {}
+    for blatt in re.findall(r"<sheet\b[^>]*>", wb):
+        name = re.search(r'\bname="([^"]+)"', blatt)
+        rid = re.search(r'\br:id="([^"]+)"', blatt)
+        if name and rid and rid.group(1) in ziele:
+            ziel = ziele[rid.group(1)]
+            pfade[html.unescape(name.group(1))] = ziel.lstrip("/") if ziel.startswith("/") else "xl/" + ziel
+    return pfade
+
+
+def _stelle_checkboxen_wieder_her(inhalt: bytes) -> bytes:
+    """Setzt die Excel-Checkboxen in Spalte W (ab Zeile 5, Wahr/Falsch-Zellen)
+    der Blaetter Almanca / DHL UPS / Rueckstaende wieder ein."""
+    fpb = _lade_feature_property_bag()
+    if fpb is None:
+        return inhalt
+    with zipfile.ZipFile(io.BytesIO(inhalt)) as zin:
+        namen = zin.namelist()
+        teile = {n: zin.read(n) for n in namen}
+    styles = teile["xl/styles.xml"].decode("utf-8")
+    if CHECKBOX_URI in styles:
+        return inhalt  # schon vorhanden
+    m = re.search(r'(<cellXfs count=")(\d+)(">)(.*?)(</cellXfs>)', styles, re.S)
+    if not m:
+        return inhalt
+    xfs = re.findall(r"<xf\b[^>]*?/>|<xf\b[^>]*?>.*?</xf>", m.group(4), re.S)
+    neue_xfs: list[str] = []
+    zuordnung: dict[int, int] = {}  # altes Zellformat -> Checkbox-Zellformat
+
+    def checkbox_format(alt: int) -> int:
+        if alt not in zuordnung:
+            xf = xfs[alt] if alt < len(xfs) else '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+            xf = xf[:-2] + ">" + CHECKBOX_EXT + "</xf>" if xf.endswith("/>") else xf.replace("</xf>", CHECKBOX_EXT + "</xf>")
+            zuordnung[alt] = len(xfs) + len(neue_xfs)
+            neue_xfs.append(xf)
+        return zuordnung[alt]
+
+    def ersetze(treffer):
+        zeile, stil = int(treffer.group(1)), treffer.group(3)
+        if zeile < ERSTE_DATENZEILE:
+            return treffer.group(0)
+        return f'<c r="W{zeile}" s="{checkbox_format(int(stil or 0))}" t="b"'
+
+    geaendert = False
+    pfade = _blatt_pfade(teile)
+    for blatt in CHECKBOX_BLAETTER:
+        pfad = pfade.get(blatt)
+        if not pfad or pfad not in teile:
+            continue
+        xml = teile[pfad].decode("utf-8")
+        neu = re.sub(r'<c r="W(\d+)"( s="(\d+)")? t="b"', ersetze, xml)
+        if neu != xml:
+            teile[pfad] = neu.encode("utf-8")
+            geaendert = True
+    if not geaendert:
+        return inhalt
+
+    anzahl = len(xfs) + len(neue_xfs)
+    styles = styles[:m.start()] + m.group(1) + str(anzahl) + m.group(3) + m.group(4) + "".join(neue_xfs) + m.group(5) + styles[m.end():]
+    teile["xl/styles.xml"] = styles.encode("utf-8")
+    teile[FPB_PFAD] = fpb
+    ct = teile["[Content_Types].xml"].decode("utf-8")
+    if FPB_PFAD not in ct:
+        ct = ct.replace("</Types>", f'<Override PartName="/{FPB_PFAD}" ContentType="{FPB_CONTENT_TYPE}"/></Types>')
+        teile["[Content_Types].xml"] = ct.encode("utf-8")
+    rels = teile["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    if FPB_REL_TYP not in rels:
+        rels = rels.replace(
+            "</Relationships>",
+            f'<Relationship Type="{FPB_REL_TYP}" Target="/{FPB_PFAD}" Id="rIdCheckbox1"/></Relationships>',
+        )
+        teile["xl/_rels/workbook.xml.rels"] = rels.encode("utf-8")
+    if FPB_PFAD not in namen:
+        namen.append(FPB_PFAD)
+
+    puffer = io.BytesIO()
+    with zipfile.ZipFile(puffer, "w", zipfile.ZIP_DEFLATED) as zout:
+        for name in namen:
+            zout.writestr(name, teile[name])
+    return puffer.getvalue()
 
 
 # --- Rueckstaende in eine bestehende Planung vorziehen ------------------------
@@ -852,7 +976,7 @@ def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
         )
     puffer = io.BytesIO()
     wb.save(puffer)
-    return puffer.getvalue()
+    return _stelle_checkboxen_wieder_her(puffer.getvalue())
 
 
 # --- Artikel pruefen: warum (nicht) eingeplant? -------------------------------

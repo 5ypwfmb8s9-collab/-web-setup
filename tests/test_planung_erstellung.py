@@ -292,3 +292,27 @@ def test_artikel_diagnose_erklaert_gruende(daten):
     geplant = pe.artikel_diagnose(positionen, bestand, zugang, PLANUNG, A_ALT)
     assert any(m.startswith("✅ Eingeplant") for m in geplant["meldungen"])
     assert pe.artikel_diagnose(positionen, bestand, zugang, PLANUNG, 123)["meldungen"][-1].startswith("❌ Kein offener Bedarf")
+
+
+def test_checkboxen_in_spalte_w_bleiben_erhalten(daten):
+    import re
+    import zipfile
+    positionen, bestand, zugang = daten
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, bestand, zugang, PLANUNG, stichtag=STICHTAG)
+    z = zipfile.ZipFile(io.BytesIO(inhalt))
+    assert pe.FPB_PFAD in z.namelist()
+    assert pe.FPB_REL_TYP in z.read("xl/_rels/workbook.xml.rels").decode()
+    assert pe.FPB_PFAD in z.read("[Content_Types].xml").decode()
+    styles = z.read("xl/styles.xml").decode()
+    xfs = re.findall(r"<xf\b[^>]*?/>|<xf\b[^>]*?>.*?</xf>", re.search(r"<cellXfs[^>]*>(.*?)</cellXfs>", styles, re.S).group(1), re.S)
+    pfade = pe._blatt_pfade({n: z.read(n) for n in ("xl/workbook.xml", "xl/_rels/workbook.xml.rels")})
+    for blatt in pe.CHECKBOX_BLAETTER:
+        xml = z.read(pfade[blatt]).decode()
+        stile = re.findall(r'<c r="W(\d+)" s="(\d+)" t="b"', xml)
+        assert len(stile) > 600
+        assert all(pe.CHECKBOX_URI in xfs[int(s)] for zeile, s in stile if int(zeile) >= 5)
+    # Vorziehen (laedt + speichert erneut) behaelt sie ebenfalls, ohne doppelt einzufuegen
+    kandidaten = pe.vorzieh_kandidaten(positionen, bestand, STICHTAG, inhalt)
+    neu = zipfile.ZipFile(io.BytesIO(pe.ergaenze_bestehende_planung(inhalt, kandidaten) if len(kandidaten) else inhalt))
+    assert pe.CHECKBOX_URI in neu.read("xl/styles.xml").decode()
+    assert neu.read("xl/_rels/workbook.xml.rels").decode().count(pe.FPB_REL_TYP) == 1
