@@ -855,6 +855,137 @@ def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
     return puffer.getvalue()
 
 
+# --- Artikel pruefen: warum (nicht) eingeplant? -------------------------------
+
+def _stk(wert) -> str:
+    return f"{float(wert):,.0f}".replace(",", ".")
+
+
+def artikel_diagnose(
+    positionen: pd.DataFrame, bestand_je_charge: pd.DataFrame,
+    zugang_vorbereitet: pd.DataFrame | None, planungsdatum, norm_nr: int,
+) -> dict:
+    """Erklaert Schritt fuer Schritt mit denselben Regeln wie die Planung,
+    warum ein Artikel (nicht) eingeplant wird. Rueckgabe: {"meldungen": [...],
+    "positionen": DataFrame, "bestand": DataFrame}."""
+    meldungen: list[str] = []
+    bis = pd.Timestamp(planungsdatum)
+    fm = _fuellmenge(norm_nr)
+    if norm_nr not in bestand_logik.FUELLMENGE_JE_ARTIKEL:
+        meldungen.append("⚠️ Keine Füllmenge in \"Almanca Hilfsdaten\" – es wird mit 1 Stk/KLT gerechnet.")
+    else:
+        meldungen.append(f"Füllmenge: {_stk(fm)} Stk/KLT.")
+
+    alle = positionen[positionen["Norm-Nr"] == norm_nr]
+    offen = alle[alle["Offene Menge"] > 0]
+    if offen.empty:
+        meldungen.append("❌ Kein offener Bedarf im Lieferplan-Export – nichts einzuplanen.")
+        return {"meldungen": meldungen, "positionen": pd.DataFrame(), "bestand": pd.DataFrame()}
+    fenster = offen[offen["Ladedatum"] <= bis]
+    if fenster.empty:
+        erstes = offen["Ladedatum"].min()
+        meldungen.append(
+            f"❌ Erste offene Position erst am {erstes:%d.%m.%Y} – nach dem Planungsdatum "
+            f"{bis:%d.%m.%Y}. Planungsdatum auf mindestens {erstes:%d.%m.%Y} setzen."
+        )
+    else:
+        meldungen.append(
+            f"Offener Bedarf bis {bis:%d.%m.%Y}: {_stk(fenster['Offene Menge'].sum())} Stk "
+            f"in {len(fenster)} Position(en)."
+        )
+
+    # Bestand je Charge mit Bewertung
+    zeilen = []
+    b = bestand_je_charge[bestand_je_charge["Norm-Nr"] == norm_nr] if bestand_je_charge is not None else pd.DataFrame()
+    if not b.empty:
+        b = b[b["Bestandsart"].notna() & (b["Bestandsart"].astype(str).str.strip() != "")]
+        for (charge, lagerort, art), menge in b.groupby(["Charge", "Lagerort", "Bestandsart"], dropna=False)["Menge"].sum().items():
+            if art not in config.BESTAND_VERFUEGBAR:
+                grund = f"zählt nicht (Bestandsart {art})"
+            elif lagerort in bestand_logik.AUSGESCHLOSSENE_LAGERORTE:
+                grund = f"zählt nicht (Lagerort {lagerort}, schon für Versand bereitgestellt)"
+            else:
+                grund = "zählt"
+            zeilen.append({"Charge": charge, "Lagerort": lagerort, "Bestandsart": art, "Menge": menge, "Bewertung": grund})
+    bestand = pd.DataFrame(zeilen)
+    nutzbar_alle = bestand_logik.nutzbarer_bestand_je_artikel(bestand_je_charge, config.BESTAND_VERFUEGBAR)
+    nutzbar = nutzbar_alle.get(norm_nr, 0)
+    if not bestand.empty:
+        zaehlt = bestand[bestand["Bewertung"] == "zählt"]
+        je_charge = zaehlt.groupby("Charge")["Menge"].sum()
+        unter_fm = je_charge[je_charge < fm]
+        meldungen.append(
+            f"Bestand gesamt {_stk(bestand['Menge'].sum())} Stk, davon frei (F1/F2, ohne OUT1) "
+            f"{_stk(zaehlt['Menge'].sum())} Stk in {len(je_charge)} Charge(n)."
+        )
+        if len(unter_fm):
+            meldungen.append(
+                f"{len(unter_fm)} Charge(n) haben weniger als eine volle KLT ({_stk(unter_fm.sum())} Stk) – "
+                "Chargen dürfen nicht gemischt werden, zählen also nicht."
+            )
+    meldungen.append(f"➡️ Nutzbar für die Planung: {_stk(nutzbar)} Stk ({_stk(nutzbar // fm if fm else 0)} KLT).")
+    if nutzbar <= 0:
+        meldungen.append("❌ Kein nutzbarer Bestand – der Bedarf steht im Blatt \"Rückstände\".")
+
+    # Verteilung wie in der Planung (aelteste Ladedaten zuerst, ueber alle Abladestellen)
+    rueckstand, planbar = _splitte_auftraege(positionen, bestand_je_charge, planungsdatum)
+    p = planbar[planbar["Norm-Nr"] == norm_nr]
+    r = rueckstand[rueckstand["Norm-Nr"] == norm_nr]
+    tabelle = fenster[["Abladestelle", "Ladedatum", "Offene Menge"]].copy() if not fenster.empty else pd.DataFrame()
+    if not tabelle.empty:
+        tabelle["aus Bestand gedeckt"] = p["Offene Menge"].reindex(tabelle.index).fillna(0)
+        tabelle["Rückstand"] = r["Offene Menge"].reindex(tabelle.index).fillna(0)
+        tabelle = tabelle.sort_values("Ladedatum")
+        gedeckt = tabelle["aus Bestand gedeckt"].sum()
+        if nutzbar > 0 and gedeckt < tabelle["Offene Menge"].sum():
+            meldungen.append(
+                f"Der Bestand reicht für {_stk(gedeckt)} von {_stk(tabelle['Offene Menge'].sum())} Stk – "
+                "er wird nach Ladedatum verteilt (älteste zuerst, über alle Abladestellen)."
+            )
+
+        # Ergebnis der Planung fuer diesen Artikel
+        planungszeilen, dhl_zeilen, _ = _baue_planung_und_versand(planbar, nutzbar_alle)
+        for blatt, liste in (("Almanca", planungszeilen), ("DHL UPS", dhl_zeilen)):
+            for z in liste:
+                if z["Norm-Nr"] == norm_nr:
+                    zusatz = f" – {z['Hinweis']}" if z.get("Hinweis") else ""
+                    meldungen.append(f"✅ Eingeplant in \"{blatt}\": {z['Abladestelle']} {_stk(z['Menge'])} Stk{zusatz}")
+        if not any(z["Norm-Nr"] == norm_nr for z in planungszeilen + dhl_zeilen) and gedeckt > 0:
+            meldungen.append("⚠️ Gedeckte Menge vorhanden, aber nicht eingeplant – bitte melden (Logikfehler).")
+    zugaenge = (zugang_vorbereitet[zugang_vorbereitet["Norm-Nr"] == norm_nr]
+                if zugang_vorbereitet is not None and not zugang_vorbereitet.empty else pd.DataFrame())
+    if not zugaenge.empty:
+        naechster = zugaenge.sort_values("Ankunft gerechnet").iloc[0]
+        meldungen.append(
+            f"Nächster Zugang: {naechster['Referenz']} am {pd.Timestamp(naechster['Ankunft gerechnet']):%d.%m.%Y} "
+            f"({_stk(naechster['Menge'])} Stk) – zählt erst nach Eintreffen als Bestand."
+        )
+    return {"meldungen": meldungen, "positionen": tabelle, "bestand": bestand}
+
+
+def _render_artikel_pruefen(daten: dict, planungsdatum) -> None:
+    with st.expander("🔎 Artikel prüfen: warum (nicht) eingeplant?"):
+        eingabe = st.text_input("Norm-Nr", key="planung_artikel_pruefen").strip()
+        if not eingabe:
+            return
+        norm_nr = _normiere_norm_nr(eingabe)
+        if norm_nr is None:
+            st.warning("Bitte eine Norm-Nr (nur Ziffern) eingeben.")
+            return
+        ergebnis = artikel_diagnose(
+            daten["positionen"], daten.get("bestand_je_charge"), daten.get("zugang"), planungsdatum, norm_nr
+        )
+        st.markdown(f"**{norm_nr} – Planungsdatum {pd.Timestamp(planungsdatum):%d.%m.%Y}**")
+        for m in ergebnis["meldungen"]:
+            st.markdown(f"- {m}")
+        if not ergebnis["positionen"].empty:
+            pos = ergebnis["positionen"].copy()
+            pos["Ladedatum"] = pos["Ladedatum"].dt.strftime("%d.%m.%Y")
+            st.dataframe(pos, hide_index=True, use_container_width=True)
+        if not ergebnis["bestand"].empty:
+            st.dataframe(ergebnis["bestand"], hide_index=True, use_container_width=True)
+
+
 # --- Streamlit-Oberflaeche ---------------------------------------------------
 
 def render_planung_tab() -> None:
@@ -915,6 +1046,7 @@ def render_planung_tab() -> None:
     kennzahlen = st.session_state.get("planung_kennzahlen")
     if not kennzahlen or st.session_state.get("planung_erstellt_fuer") != planungsdatum:
         st.divider()
+        _render_artikel_pruefen(daten, planungsdatum)
         _render_vorziehen(daten)
         return
 
@@ -970,6 +1102,7 @@ def render_planung_tab() -> None:
     st.divider()
     _render_rueckstand_vorschau(st.session_state.get("planung_rueckstand_anzeige"), planungsdatum)
     st.divider()
+    _render_artikel_pruefen(daten, planungsdatum)
     _render_vorziehen(daten)
 
 

@@ -280,3 +280,15 @@ def test_dhl_ups_zeile_a_bis_t_gruen(daten):
     gruen = pe.GRUEN_FUELLUNG.fgColor.rgb
     assert all(ws.cell(row=r, column=c).fill.fgColor.rgb == gruen for c in range(1, 21))
     assert ws.cell(row=r, column=21).fill.fgColor.rgb != gruen
+
+
+def test_artikel_diagnose_erklaert_gruende(daten):
+    positionen, bestand, zugang = daten
+    zu_spaet = pe.artikel_diagnose(positionen, bestand, zugang, "2026-10-25", A_NEU)
+    assert any("nach dem Planungsdatum" in m for m in zu_spaet["meldungen"])
+    ohne_bestand = pe.artikel_diagnose(positionen, bestand, zugang, PLANUNG, A_ERW)
+    assert any("Kein nutzbarer Bestand" in m for m in ohne_bestand["meldungen"])
+    assert any("NRI2026000000001" in m for m in ohne_bestand["meldungen"])
+    geplant = pe.artikel_diagnose(positionen, bestand, zugang, PLANUNG, A_ALT)
+    assert any(m.startswith("✅ Eingeplant") for m in geplant["meldungen"])
+    assert pe.artikel_diagnose(positionen, bestand, zugang, PLANUNG, 123)["meldungen"][-1].startswith("❌ Kein offener Bedarf")
