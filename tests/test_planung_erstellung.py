@@ -356,3 +356,25 @@ def test_mix_paletten_unten_und_zusammenhaengend(spez):
     for start, ende in zip(traeger, traeger[1:] + [len(mix)]):
         bei = int(mix[start]["Norm-Nr"])
         assert all(f"bei {bei}" in z["Hinweis"] for z in mix[start + 1:ende])
+
+
+@pytest.mark.parametrize("abladestelle", ["CTCT", "ACHG", "PT02"])
+def test_ctct_achg_pt02_nie_dhl_ups(abladestelle):
+    positionen = _positionen([
+        (A_ALT, abladestelle, "2026-11-05", 11),  # 10 + angefangene Lage 1 -> bleibt komplett
+        (A_NEU, abladestelle, "2026-11-05", 2),   # klein, ohne Mix-Partner -> trotzdem Almanca
+    ])
+    inhalt, kennzahlen, _ = pe.erstelle_planungsdatei(
+        positionen, _bestand({A_ALT: 11, A_NEU: 2}), None, PLANUNG, stichtag=STICHTAG
+    )
+    wb = openpyxl.load_workbook(io.BytesIO(inhalt))
+    alm = _zeilen(wb["Almanca"])
+    assert wb["Almanca"].cell(row=alm[A_ALT], column=9).value == 11
+    assert wb["Almanca"].cell(row=alm[A_NEU], column=9).value == 2
+    assert _zeilen(wb["DHL UPS"]) == {} and kennzahlen["dhl_ups_zeilen"] == 0
+
+
+def test_andere_abladestelle_weiter_dhl_ups():
+    positionen = _positionen([(A_NEU, "20A", "2026-11-05", 2)])
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({A_NEU: 2}), None, PLANUNG, stichtag=STICHTAG)
+    assert A_NEU in _zeilen(openpyxl.load_workbook(io.BytesIO(inhalt))["DHL UPS"])

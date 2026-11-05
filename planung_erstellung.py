@@ -116,6 +116,13 @@ SPALTE_LAGERAUFTRAG, SPALTE_LIEFERSCHEIN = 12, 13
 SPALTE_PALETTEN_TYP, SPALTE_PALETTEN_ANZAHL, SPALTE_HINWEIS = 14, 17, 26
 GELB_BIS_SPALTE = 20  # A bis T
 MINDEST_PACKEINHEITEN_FUER_PALETTE = 5  # darunter: einzeln nicht paletten-/versandfaehig -> DHL/UPS
+# Abladestellen, die NIE per DHL/UPS gehen (Anfrage 05.11.): alles bleibt in
+# "Almanca" - keine abgetrennten Lagen-Reste, kleine Artikel als eigene Zeile.
+KEIN_DHL_UPS_ABLADESTELLEN = {"CTCT", "ACHG", "PT02"}
+
+
+def _kein_dhl_ups(abladestelle) -> bool:
+    return str(abladestelle).strip().upper() in KEIN_DHL_UPS_ABLADESTELLEN
 
 
 # --- Referenzdaten aus der Vorlage (Füllmenge, Palettentyp) -----------------
@@ -318,6 +325,7 @@ def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
 #   ebenfalls unbekannter.
 # - Reihenfolge je Abladestelle: erst die normalen Paletten, darunter die
 #   Mix-Paletten, jede zusammenhaengend (Traegerzeile zuerst).
+# - Abladestellen CTCT, ACHG, PT02: nie DHL UPS, alles bleibt in Almanca.
 # - Pro Artikel/Abladestelle hoechstens eine Zeile je Blatt.
 
 STANDARD_MIX_PALETTE = "111444"
@@ -441,6 +449,23 @@ def _teilmenge_kombis(rueckstand: pd.DataFrame, planbar: pd.DataFrame) -> set:
     return in_rueckstand & in_planbar
 
 
+def _ohne_dhl_ups(planungszeilen: list[dict], dhl_ups_zeilen: list[dict]) -> list[dict]:
+    """DHL/UPS-Mengen zurueck nach Almanca: zur vorhandenen Zeile desselben
+    Artikels addieren (nie zwei Zeilen je Artikel), sonst als eigene Zeile."""
+    je_artikel = {z["Norm-Nr"]: z for z in planungszeilen}
+    zusatz = []
+    for z in dhl_ups_zeilen:
+        ziel = je_artikel.get(z["Norm-Nr"])
+        if ziel is not None:
+            ziel["Menge"] += z["Menge"]
+            ziel["Menge_gerundet"] = bool(ziel.get("Menge_gerundet")) or bool(z.get("Menge_gerundet"))
+        else:
+            neu = dict(z)
+            zusatz.append(neu)
+            je_artikel[z["Norm-Nr"]] = neu
+    return planungszeilen + zusatz
+
+
 def _baue_planung_und_versand(
     planbar: pd.DataFrame, nutzbar: dict | None = None
 ) -> tuple[list[dict], list[dict], pd.DataFrame]:
@@ -456,6 +481,9 @@ def _baue_planung_und_versand(
     alle_dhl_ups_zeilen: list[dict] = []
     for abladestelle, gruppe in gerundet.groupby("Abladestelle", sort=True):
         planungszeilen, dhl_ups_zeilen = _plane_abladestelle(gruppe, abladestelle)
+        if _kein_dhl_ups(abladestelle):
+            planungszeilen = _ohne_dhl_ups(planungszeilen, dhl_ups_zeilen)
+            dhl_ups_zeilen = []
         for zeile in planungszeilen:
             zeile["Abladestelle"] = abladestelle
             alle_planungszeilen.append(zeile)
@@ -1006,6 +1034,8 @@ def vorzieh_kandidaten(
     zeilen = []
     for _, k in kandidaten.iterrows():
         teil = _teile_artikel(k, _normiere_lagerort(k["Abladestelle"]))
+        if _kein_dhl_ups(k["Abladestelle"]):
+            teil = {**teil, "bleibt": teil["bleibt"] + teil["rest"], "rest": 0}
         for klt, ziel in ((teil["bleibt"], "Almanca"), (teil["rest"], "DHL UPS")):
             if klt:
                 zeilen.append({
