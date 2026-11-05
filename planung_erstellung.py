@@ -36,8 +36,8 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   Dispo-Abladestelle entspricht hier der Vorlagen-Spalte "Lagerort", NICHT
   der Vorlagen-Spalte "Abladestelle" - letztere wird aus einer anderen
   Codierung ueber das Blatt "Werke" abgeleitet), Spalte G = Norm-Nr,
-  Spalte I = Menge. Sortiert nach Abladestelle aufsteigend, Leerzeile
-  zwischen Abladestellen-Gruppen.
+  Spalte I = Menge. Sortiert nach Werk (Blatt "Werke"), darin nach
+  Abladestelle, Leerzeile zwischen Abladestellen-Gruppen.
 - Menge wird auf das naechste volle Vielfache der Fuellmenge aufgerundet
   (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift - aber je
   Artikel nie ueber die nutzbaren KLT hinaus (sonst je Abladestelle bis zu
@@ -211,6 +211,45 @@ def _klt_art(lagerort, norm_nr) -> str:
 
 # Standardwert, falls ein (Lagerort, Norm-Nr) nicht in Stammdaten vorkommt.
 _STANDARD_PALETTE = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 10, "typ": ""}
+
+
+def _normiere_lagerort(wert) -> str:
+    if wert is None:
+        return ""
+    if isinstance(wert, float) and wert.is_integer():
+        wert = int(wert)
+    return str(wert).strip()
+
+
+def _lade_werke() -> dict:
+    """Abladestelle (Wert in Spalte C "Lagerort") -> Werk, aus dem Blatt
+    "Werke" der Vorlage - dieselbe Quelle wie die Formel in Spalte A."""
+    try:
+        werke = pd.read_excel(VORLAGE_DATEI, sheet_name="Werke", header=None)
+    except (FileNotFoundError, ValueError):
+        return {}
+    zuordnung = {}
+    for code, werk in zip(werke.iloc[1:, 0], werke.iloc[1:, 2]):
+        if pd.notna(code) and pd.notna(werk):
+            zuordnung.setdefault(_normiere_lagerort(code), _normiere_lagerort(werk))
+    return zuordnung
+
+
+_WERKE = _lade_werke()
+
+
+def _werk_sortierung(abladestelle) -> tuple:
+    """Sortierschluessel: erst Werk (natuerlich: 7, 11, 14, 14S, 15 ... dann
+    Buchstaben-Werke wie IN, LD), Abladestellen ohne Werk ans Ende; innerhalb
+    des Werks nach Abladestelle (Anfrage 05.11.)."""
+    ablade = _normiere_lagerort(abladestelle)
+    werk = _WERKE.get(ablade)
+    if werk is None:
+        return (2, 0, "", ablade)
+    m = re.match(r"(\d+)(.*)", werk)
+    if m:
+        return (0, int(m.group(1)), m.group(2), ablade)
+    return (1, 0, werk, ablade)
 
 
 def _fuellmenge(norm_nr) -> float:
@@ -479,7 +518,8 @@ def _baue_planung_und_versand(
 
     alle_planungszeilen: list[dict] = []
     alle_dhl_ups_zeilen: list[dict] = []
-    for abladestelle, gruppe in gerundet.groupby("Abladestelle", sort=True):
+    gruppen = sorted(gerundet.groupby("Abladestelle"), key=lambda g: _werk_sortierung(g[0]))
+    for abladestelle, gruppe in gruppen:  # erst nach Werk, dann nach Abladestelle
         planungszeilen, dhl_ups_zeilen = _plane_abladestelle(gruppe, abladestelle)
         if _kein_dhl_ups(abladestelle):
             planungszeilen = _ohne_dhl_ups(planungszeilen, dhl_ups_zeilen)
@@ -961,14 +1001,6 @@ def _stelle_checkboxen_wieder_her(inhalt: bytes) -> bytes:
 
 
 # --- Rueckstaende in eine bestehende Planung vorziehen ------------------------
-
-def _normiere_lagerort(wert) -> str:
-    if wert is None:
-        return ""
-    if isinstance(wert, float) and wert.is_integer():
-        wert = int(wert)
-    return str(wert).strip()
-
 
 def _normiere_norm_nr(wert):
     try:

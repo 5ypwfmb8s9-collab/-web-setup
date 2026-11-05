@@ -378,3 +378,15 @@ def test_andere_abladestelle_weiter_dhl_ups():
     positionen = _positionen([(A_NEU, "20A", "2026-11-05", 2)])
     inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({A_NEU: 2}), None, PLANUNG, stichtag=STICHTAG)
     assert A_NEU in _zeilen(openpyxl.load_workbook(io.BytesIO(inhalt))["DHL UPS"])
+
+
+def test_planung_nach_werk_dann_abladestelle(monkeypatch):
+    monkeypatch.setattr(pe, "_WERKE", {"ZZ1": "11", "AA9": "88", "BB1": "11", "CC1": "14S", "DD1": "LD"})
+    positionen = _positionen([
+        (A_ALT, "AA9", "2026-11-05", 20), (A_NEU, "ZZ1", "2026-11-05", 20), (A_ERW, "BB1", "2026-11-05", 20),
+        (A_NIX, "CC1", "2026-11-05", 20), (999000005, "DD1", "2026-11-05", 20), (999000006, "XX0", "2026-11-05", 20),
+    ])
+    bestand = _bestand({n: 20 for n in (A_ALT, A_NEU, A_ERW, A_NIX, 999000005, 999000006)})
+    plan, _, _ = pe._baue_planung_und_versand(positionen, pe.bestand_logik.nutzbarer_bestand_je_artikel(bestand, pe.config.BESTAND_VERFUEGBAR))
+    folge = list(dict.fromkeys(z["Abladestelle"] for z in plan))
+    assert folge == ["BB1", "ZZ1", "CC1", "AA9", "DD1", "XX0"]  # 11 (BB1, ZZ1), 14S, 88, LD, ohne Werk
