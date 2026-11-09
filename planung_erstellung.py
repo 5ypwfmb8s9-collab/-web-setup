@@ -362,6 +362,15 @@ def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
 #   werden nie gemischt (Anfrage 04.11.). KLT-Art wie Formel R der Vorlage
 #   (Stammdaten, sonst SAP Format). Unbekannte KLT-Art mischt nur mit
 #   ebenfalls unbekannter.
+# - Kleine Artikel, die so zusammen keine 5 KLT erreichen, gehen nicht sofort
+#   zu DHL UPS: passt ihr Rest (gleiche KLT-Art) noch in die angefangene
+#   oberste Lage einer Palette dieser Abladestelle (Palette eines grossen
+#   Artikels mit >= 5 KLT in der obersten Lage oder eine Mix-Palette), kommt
+#   er dort mit drauf (Anfrage 09.11., Beispiel 101K4: 2 KLT 100635300 auf die
+#   oberste Lage 7 KLT von 100299700, 10 je Lage). Es wird die Lage gewaehlt,
+#   die danach am vollsten ist. Die Zeile des Zusatz-Artikels steht direkt
+#   unter der Palette; ihre Formeln N/Q ergeben "-"/0 (< 5 KLT), es entsteht
+#   also keine zusaetzliche Palette. Nur was nirgends passt -> DHL UPS.
 # - Reihenfolge je Abladestelle: erst die normalen Paletten, darunter die
 #   Mix-Paletten, jede zusammenhaengend (Traegerzeile zuerst).
 # - Abladestellen CTCT, ACHG, PT02: nie DHL UPS, alles bleibt in Almanca.
@@ -391,7 +400,9 @@ def _teile_artikel(zeile, lagerort: str) -> dict:
             bleibt, rest = klt - angefangene_lage, angefangene_lage
         else:
             bleibt, rest = klt, 0
-    return {"bleibt": bleibt, "rest": rest, "pro_lage": pro_lage, "typ": str(spez.get("typ") or "").strip()}
+    oberste_lage = (bleibt % pro_palette) % pro_lage if bleibt else 0
+    return {"bleibt": bleibt, "rest": rest, "pro_lage": pro_lage, "oberste_lage": oberste_lage,
+            "typ": str(spez.get("typ") or "").strip()}
 
 
 def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict], list[dict]]:
@@ -404,9 +415,16 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
     planung: dict = {}  # Norm-Nr -> Zeile
     reste: list[dict] = []
     dhl_ups: list[dict] = []
+    # Paletten mit Platz in der angefangenen obersten Lage (fuer kleine Reste)
+    lagen_platz: list[dict] = []
     for _, zeile in gruppe.iterrows():
         teil = _teile_artikel(zeile, lagerort)
         fm = zeile["Fuellmenge"]
+        if teil["bleibt"] and teil["oberste_lage"]:
+            lagen_platz.append({
+                "art": "artikel", "Norm-Nr": zeile["Norm-Nr"], "klt_art": _klt_art(lagerort, zeile["Norm-Nr"]),
+                "belegt": teil["oberste_lage"], "kapazitaet": teil["pro_lage"], "gaeste": [],
+            })
         if teil["bleibt"]:
             planung[zeile["Norm-Nr"]] = {
                 "Norm-Nr": zeile["Norm-Nr"], "Menge": teil["bleibt"] * fm,
@@ -433,7 +451,8 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
 
     # Mix-Paletten: groesster Rest zuerst als Grundstock, auffuellen bis eine Lage voll.
     reste.sort(key=lambda r: r["KLT"], reverse=True)
-    mix_zeilen: list[dict] = []  # Mix-Paletten, je Palette zusammenhaengend
+    mixe: list[dict] = []
+    zu_klein: list[dict] = []
     while reste:
         grundstock = reste.pop(0)
         kapazitaet = grundstock["pro_lage"]
@@ -445,36 +464,73 @@ def _plane_abladestelle(gruppe: pd.DataFrame, lagerort: str) -> tuple[list[dict]
             else:
                 uebrig.append(kandidat)
         reste = uebrig
-
         if summe < MINDEST_PACKEINHEITEN_FUER_PALETTE:
-            for r in mix:
-                dhl_ups.append({
-                    "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
-                    "Menge_gerundet": r["Menge_gerundet"], "Hinweis": r["Hinweis"],
-                })
-            continue
+            zu_klein.extend(mix)
+        else:
+            mixe.append({"art": "mix", "mix": mix, "klt_art": grundstock["klt_art"],
+                         "belegt": summe, "kapazitaet": kapazitaet, "gaeste": []})
 
+    # Was allein zu klein ist: in eine angefangene Lage mit Platz legen
+    # (Lage, die danach am vollsten ist), sonst DHL UPS.
+    for r in sorted(zu_klein, key=lambda r: r["KLT"], reverse=True):
+        passend = [
+            p for p in lagen_platz + mixe
+            if p["klt_art"] == r["klt_art"] and p["belegt"] + r["KLT"] <= p["kapazitaet"]
+        ]
+        if passend:
+            ziel = max(passend, key=lambda p: p["belegt"] + r["KLT"])
+            ziel["gaeste"].append(r)
+            ziel["belegt"] += r["KLT"]
+        else:
+            dhl_ups.append({
+                "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
+                "Menge_gerundet": r["Menge_gerundet"], "Hinweis": r["Hinweis"],
+            })
+
+    def _gast_zeile(r, text):
+        return {
+            "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
+            "Menge_gerundet": r["Menge_gerundet"],
+            "Hinweis": " · ".join(t for t in (text, r["Hinweis"]) if t),
+        }
+
+    mix_zeilen: list[dict] = []  # Mix-Paletten, je Palette zusammenhaengend
+    for m in mixe:
+        grundstock = m["mix"][0]
+        alle = m["mix"] + m["gaeste"]
         typ = grundstock["typ"] if grundstock["typ"] in BEKANNTE_PALETTEN else STANDARD_MIX_PALETTE
         art = f" ({grundstock['klt_art']})" if grundstock["klt_art"] else ""
-        beschreibung = f"Mix-Palette{art} " + " + ".join(f"{r['KLT']}" for r in mix) + f" = {summe} KLT"
-        for i, r in enumerate(mix):
-            eintrag = {
-                "Norm-Nr": r["Norm-Nr"], "Menge": r["KLT"] * r["Fuellmenge"],
-                "Menge_gerundet": r["Menge_gerundet"],
-            }
+        beschreibung = f"Mix-Palette{art} " + " + ".join(f"{r['KLT']}" for r in alle) + f" = {m['belegt']} KLT"
+        for i, r in enumerate(alle):
             if i == 0:
                 # Zeile mit dem groessten Anteil traegt die Mix-Palette (die
                 # Formeln N/Q ergaeben hier "-"/0, weil < 5 KLT je Zeile).
+                eintrag = _gast_zeile(r, f"{beschreibung} (1 x {typ} in dieser Zeile)")
                 eintrag["Paletten Typ"] = typ
                 eintrag["Paletten Anzahl"] = 1
-                text = f"{beschreibung} (1 x {typ} in dieser Zeile)"
             else:
-                text = f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}"
-            eintrag["Hinweis"] = " · ".join(t for t in (text, r["Hinweis"]) if t)
+                eintrag = _gast_zeile(r, f"{r['KLT']} KLT auf Mix-Palette bei {int(grundstock['Norm-Nr'])}")
             mix_zeilen.append(eintrag)
 
-    # Erst die normalen Paletten, darunter die Mix-Paletten (Anfrage 04.11.).
-    planungszeilen = [planung[n] for n in gruppe["Norm-Nr"] if n in planung] + mix_zeilen
+    # Erst die normalen Paletten (Zusatz-Artikel direkt unter ihrer Palette),
+    # darunter die Mix-Paletten (Anfrage 04.11.).
+    gaeste_je_artikel = {p["Norm-Nr"]: p for p in lagen_platz if p["gaeste"]}
+    planungszeilen = []
+    for n in gruppe["Norm-Nr"]:
+        if n not in planung:
+            continue
+        zeile = planung[n]
+        platz = gaeste_je_artikel.get(n)
+        if platz is not None:
+            oben = platz["belegt"] - sum(g["KLT"] for g in platz["gaeste"])
+            text = (f"Oberste Lage {oben} + " + " + ".join(str(g["KLT"]) for g in platz["gaeste"])
+                    + f" = {platz['belegt']} KLT (Zusatz-Artikel direkt darunter)")
+            zeile["Hinweis"] = " · ".join(t for t in (text, zeile.get("Hinweis")) if t)
+        planungszeilen.append(zeile)
+        if platz is not None:
+            for g in platz["gaeste"]:
+                planungszeilen.append(_gast_zeile(g, f"{g['KLT']} KLT auf oberste Lage der Palette von {int(n)}"))
+    planungszeilen += mix_zeilen
     return planungszeilen, dhl_ups
 
 
@@ -1277,7 +1333,8 @@ def render_planung_tab() -> None:
         "in Spalte L. Im Blatt \"Rückstände\" sind Zeilen gelb (A–T), für die bis "
         "zum Planungsdatum eine NRI eintrifft. Paletten: angefangene Lagen mit "
         "weniger als 5 KLT kommen von der Palette (→ DHL UPS); Artikel unter 5 KLT "
-        "werden je Abladestelle zu Mix-Paletten zusammengelegt; "
+        "werden je Abladestelle zu Mix-Paletten zusammengelegt oder, wenn das "
+        "nicht reicht, oben auf eine angefangene Lage mit Platz gelegt; "
         "Mix-Paletten stehen mit Typ (N), Anzahl (Q) und Erklärung (Z) in der Datei."
     )
 

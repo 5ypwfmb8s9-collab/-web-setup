@@ -183,6 +183,38 @@ def test_rest_eines_grossen_artikels_geht_zu_dhl_nicht_auf_mix(spez):
     assert "Paletten Anzahl" not in zeilen[3]
 
 
+def test_kleiner_rest_kommt_auf_angefangene_lage_statt_ups(spez):
+    # Beispiel 101K4 (09.11.): 100299700 mit 7 KLT (oberste Lage 7 von 10),
+    # 100635300 nur 2 KLT -> passt mit auf die Lage, nichts zu DHL UPS.
+    gruppe = _gruppe([(100299700, 7, 1250, False), (100635300, 2, 750, False), (110021500, 6, 1750, False)])
+    plan, dhl = pe._plane_abladestelle(gruppe, "101K4")
+    assert dhl == []
+    assert [z["Norm-Nr"] for z in plan] == [100299700, 100635300, 110021500]  # Gast direkt darunter
+    gastgeber, gast = plan[0], plan[1]
+    assert gastgeber["Hinweis"].startswith("Oberste Lage 7 + 2 = 9 KLT")
+    assert gast["Menge"] == 1500 and gast["Hinweis"] == "2 KLT auf oberste Lage der Palette von 100299700"
+    assert "Paletten Anzahl" not in gast and "Paletten Typ" not in gast  # N/Q bleiben Formeln ("-"/0)
+
+
+def test_kleiner_rest_ohne_platz_oder_andere_klt_art_bleibt_ups(spez, monkeypatch):
+    # 9 KLT oben: kein Platz fuer 2 weitere (10 je Lage)
+    plan, dhl = pe._plane_abladestelle(_gruppe([(1, 9, 100, False), (2, 2, 100, False)]), "X")
+    assert [z["Norm-Nr"] for z in plan] == [1] and [z["Norm-Nr"] for z in dhl] == [2]
+    # Platz waere da, aber andere KLT-Art
+    monkeypatch.setattr(pe, "_KLT_ART_STAMM", {("X", 1): "003147", ("X", 2): "004147"})
+    monkeypatch.setattr(pe, "_KLT_ART_SAP", {})
+    plan, dhl = pe._plane_abladestelle(_gruppe([(1, 6, 100, False), (2, 2, 100, False)]), "X")
+    assert [z["Norm-Nr"] for z in plan] == [1] and [z["Norm-Nr"] for z in dhl] == [2]
+
+
+def test_kleine_reste_fuellen_die_vollste_passende_lage(spez):
+    # Zwei moegliche Lagen (6 und 8 KLT oben): 2 KLT kommen auf die 8er-Lage -> 10 voll
+    gruppe = _gruppe([(1, 6, 100, False), (2, 8, 100, False), (3, 2, 100, False)])
+    plan, dhl = pe._plane_abladestelle(gruppe, "X")
+    assert dhl == [] and [z["Norm-Nr"] for z in plan] == [1, 2, 3]
+    assert plan[1]["Hinweis"].startswith("Oberste Lage 8 + 2 = 10 KLT")
+
+
 def test_mix_palette_in_datei_geschrieben(spez):
     positionen = _positionen([(A_ALT, "20A", "2026-11-05", 3), (A_NEU, "20A", "2026-11-05", 2)])
     inhalt, kennzahlen, _ = pe.erstelle_planungsdatei(
