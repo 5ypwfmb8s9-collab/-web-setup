@@ -125,6 +125,32 @@ einem Postfach in eine SharePoint-Liste erfassen (aktuell nicht in der
 Oberflaeche verdrahtet, aber fertig getestet und nutzbar als Grundlage,
 falls das spaeter gewuenscht ist).
 
+## Dashboard Dispo: Ausgabedatei = Bericht für die Produktion
+
+Im Unter-Reiter **Ausgabedatei** entsteht die Excel-Datei, die die Dispo der
+Produktion in der Türkei schickt (`produktionsbericht.py`). Spaltenköpfe und
+Stufen stehen zweisprachig (DE/TR), die Hinweistexte wahlweise Türkisch oder
+Deutsch.
+
+- **Übersicht** – eine Zeile je Artikel, dringendste zuerst:
+  1 Rückstand fehlt → 2 Rückstand unterwegs → 3 Engpass in der Reaktionszeit
+  der Türkei (Standard 14 Tage) → 4 später (Standard bis 22 Wochen).
+  „Fehlt“ = weder bei uns noch unterwegs. Notizspalten für Dispo (blau) und
+  Produktion (orange).
+- **Details** – je Artikel ein Block: Unterwegs (NRI, Ankunft), jede
+  Einteilung im Rückstand und in der Reaktionszeit mit „rechtzeitig gedeckt /
+  kommt später / fehlt“ und Hinweis (welche NRI, wie viele Tage zu spät,
+  Transportart für pünktliche Lieferung), danach spätere Wochen mit Fehlmenge.
+- **Wochen** – Bedarf / Zulauf / Fehlt je Kalenderwoche bis zum Vorschauende.
+- **Unterwegs** – alle Zugänge (ZMM1000) mit NRI.
+- **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen.
+
+Deckung je Einteilung wie in `dispo_dashboard/logic.py` (Bestand, dann Zugänge
+nach Ankunft); „kommt später“ + „fehlt“ ergibt genau die Fehlmenge des
+Dashboards. Notizen: den zuletzt verschickten/zurückbekommenen Bericht
+hochladen, dann werden die Notizen je Artikel übernommen. Für die
+Wochenvorschau muss der Bedarfsexport aus SAP entsprechend weit reichen.
+
 ## Zentral hosten (Streamlit Community Cloud)
 
 Fuer Kollegen zugaenglich machen, ohne dass jeder Python lokal
@@ -202,6 +228,8 @@ Power-Automate-Variante (mit simulierten HTTP-Antworten) ab.
   SharePoint fuer die Power-Automate-Alternative.
 - `tests/test_ladeliste_logic.py`, `tests/test_reklamation_lokal.py`,
   `tests/test_reklamation_logic.py` – pytest-Tests.
+- `produktionsbericht.py` – Bericht für die Produktion (Ausgabedatei im
+  Dashboard Dispo), UI-unabhaengig; Tests in `tests/test_produktionsbericht.py`.
 - `requirements.txt` – Python-Abhaengigkeiten.
 - `.streamlit/secrets.toml.example` – Vorlage fuer die (nicht
   eingecheckte) `secrets.toml` mit den Flow-URLs (nur fuer die

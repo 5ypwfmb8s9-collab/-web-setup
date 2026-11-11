@@ -24,6 +24,7 @@ import streamlit as st
 from dispo_dashboard import config, loaders, logic
 
 import bestand_logik
+import produktionsbericht
 
 ORDNER_DATEI = ".dispo_sap_ordner.txt"
 KONTAKTE_DATEI = ".dispo_kontakte.json"
@@ -1026,7 +1027,7 @@ def _dringlichkeit_sortierung(positionen: pd.DataFrame) -> pd.DataFrame:
     return positionen.loc[reihenfolge.index]
 
 
-def _render_export_tab(positionen: pd.DataFrame) -> None:
+def _render_positionsliste_alt(positionen: pd.DataFrame) -> None:
     st.caption(
         "Vollstaendige Positionsliste (inkl. Bestellmenge/Geliefert), sortiert "
         "nach Dringlichkeit - oben steht, was am dringendsten gebraucht wird. "
@@ -1047,12 +1048,130 @@ def _render_export_tab(positionen: pd.DataFrame) -> None:
     puffer.seek(0)
     sprachkuerzel = "DE" if sprache == "Deutsch" else "TR"
     st.download_button(
-        "📥 Ausgabedatei herunterladen",
+        "📥 Positionsliste herunterladen",
         data=puffer,
         file_name=f"Dispo_Rueckstand_{sprachkuerzel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="dispo_export_download",
     )
+
+
+_BERICHT_VORSCHAU_SPALTEN = {
+    "Rang": "Nr.", "Stufe_Text": "Dringlichkeit", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr",
+    "Kurztext": "Bezeichnung", "Bestand": "Bestand bei uns", "Unterwegs": "Unterwegs",
+    "Rückstand fehlt": "Rückstand fehlt", "Rückstand später": "Rückstand kommt später",
+    "Kurz fehlt": "Fehlt (Reaktionszeit)", "Später fehlt": "Fehlt später",
+    "Erster Engpass": "Erster Engpass",
+}
+
+
+def _render_export_tab(daten: dict) -> None:
+    positionen = daten["positionen"]
+    stichtag = pd.Timestamp(daten["stichtag"])
+    st.markdown("#### Bericht für die Produktion (Türkei)")
+    st.caption(
+        "Excel-Datei zum Verschicken an die Produktion: je Artikel, was im Rückstand fehlt, "
+        "was schon unterwegs ist (NRI) und was in den nächsten Tagen und Wochen gebraucht "
+        "wird – dringendste Artikel zuerst. „Fehlt“ = weder bei uns noch unterwegs, muss "
+        "also aus der Türkei kommen. Spaltenköpfe stehen auf Deutsch und Türkisch. Dispo und "
+        "Produktion schreiben ihre Notizen in die Übersicht; lädst du den letzten Bericht "
+        "(mit Notizen) unten hoch, werden sie in den neuen Bericht übernommen."
+    )
+    c1, c2, c3 = st.columns(3)
+    reaktion = int(c1.number_input(
+        "Reaktionszeit Türkei (Tage)", min_value=1, max_value=60,
+        value=produktionsbericht.STANDARD_REAKTION_TAGE, key="bericht_reaktion",
+        help="Engpässe innerhalb dieser Tage stehen direkt nach den Rückständen.",
+    ))
+    wochen = int(c2.number_input(
+        "Vorschau (Wochen)", min_value=1, max_value=52,
+        value=produktionsbericht.STANDARD_WOCHEN, key="bericht_wochen",
+    ))
+    sprache = c3.radio("Sprache der Hinweistexte", ["Türkçe", "Deutsch"], horizontal=True, key="bericht_sprache")
+    gedeckte = st.checkbox("Auch vollständig gedeckte Artikel aufnehmen", key="bericht_gedeckte")
+    vorher = st.file_uploader(
+        "Notizen übernehmen: letzten Bericht hochladen (optional)", type=["xlsx"], key="bericht_vorher",
+    )
+
+    notizen = {}
+    if vorher is not None:
+        try:
+            notizen = produktionsbericht.lese_notizen(vorher.getvalue())
+        except Exception as exc:  # beschaedigte/fremde Datei - Bericht trotzdem erstellen
+            st.warning(f"Notizen konnten nicht gelesen werden: {exc}")
+
+    bericht = produktionsbericht.berechne_bericht(
+        positionen, daten.get("zugang"), stichtag, reaktion, wochen, gedeckte,
+    )
+    kz = produktionsbericht.kennzahlen(bericht)
+    stufen = kz["je_stufe"]
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Rückstand – fehlt", stufen[1])
+    m2.metric("Rückstand – unterwegs", stufen[2])
+    m3.metric(f"Engpass ≤ {reaktion} Tage", stufen[3])
+    m4.metric(f"Später ≤ {wochen} Wochen", stufen[4])
+    m5.metric("NRI unterwegs", kz["nri"])
+
+    letztes = positionen["Ladedatum"].max() if not positionen.empty else pd.NaT
+    if pd.notna(letztes) and letztes < bericht["horizont"] - pd.Timedelta(days=7):
+        st.warning(
+            f"⚠️ Der Bedarfsexport reicht nur bis zum {letztes:%d.%m.%Y}. Für die "
+            f"{wochen}-Wochen-Vorschau den Lieferplan-Export in SAP bis mindestens "
+            f"{bericht['horizont']:%d.%m.%Y} ziehen – sonst fehlen spätere Bedarfe im Bericht."
+        )
+    if notizen:
+        im_bericht = set(bericht["artikel"]["Norm-Nr"]) if not bericht["artikel"].empty else set()
+        archiv = len([n for n in notizen if n not in im_bericht])
+        st.success(
+            f"{len(notizen)} Artikel mit Notizen übernommen"
+            + (f" ({archiv} davon stehen gerade nicht im Bericht → Blatt „Notizen-Archiv“)." if archiv else ".")
+        )
+
+    inhalt = produktionsbericht.erstelle_bericht_datei(
+        bericht, notizen, "TR" if sprache == "Türkçe" else "DE",
+    )
+    st.download_button(
+        "📥 Bericht für die Produktion herunterladen",
+        data=inhalt,
+        file_name=produktionsbericht.dateiname(stichtag),
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="bericht_download",
+        type="primary",
+    )
+
+    artikel = bericht["artikel"]
+    if artikel.empty:
+        st.success("Nichts zu melden: kein Rückstand und keine Fehlmenge im Vorschauzeitraum.")
+    else:
+        vorschau = artikel.copy()
+        vorschau["Stufe_Text"] = vorschau["Stufe"].map(
+            lambda s: produktionsbericht.STUFEN[s]["de"].format(tage=reaktion, wochen=wochen)
+        )
+        vorschau = vorschau[list(_BERICHT_VORSCHAU_SPALTEN)].rename(columns=_BERICHT_VORSCHAU_SPALTEN)
+        _zeige_tabelle(
+            vorschau, list(vorschau.columns),
+            menge_spalten=("Bestand bei uns", "Unterwegs", "Rückstand fehlt", "Rückstand kommt später",
+                           "Fehlt (Reaktionszeit)", "Fehlt später"),
+            datum_spalten=("Erster Engpass",),
+        )
+    with st.expander("So ist die Datei aufgebaut"):
+        st.markdown(
+            "- **Übersicht** – eine Zeile je Artikel, dringendste zuerst: 1 Rückstand fehlt → "
+            "2 Rückstand unterwegs (Ware kommt, aber zu spät) → 3 Engpass in der Reaktionszeit → "
+            "4 später. Blaue Spalte = Notiz Dispo, orange = Notiz Produktion. Klick auf die Norm-Nr "
+            "springt zum Detailblock.\n"
+            "- **Details** – je Artikel ein Block: was unterwegs ist (NRI, Ankunft, Menge), jede "
+            "Einteilung im Rückstand und in der Reaktionszeit mit „rechtzeitig gedeckt / kommt "
+            "später / fehlt“ und Hinweis (welche NRI deckt, wie viele Tage zu spät, welche "
+            "Transportart für pünktliche Lieferung nötig wäre), danach die späteren Wochen mit "
+            "Fehlmenge.\n"
+            "- **Wochen** – Bedarf, Zulauf und Fehlmenge je Kalenderwoche bis zum Vorschauende.\n"
+            "- **Unterwegs** – alle Zugänge (ZMM1000) mit NRI, Spediteur und Ankunft.\n"
+            "- **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen; sie "
+            "kommen automatisch zurück, sobald der Artikel wieder auftaucht."
+        )
+    with st.expander("Positionsliste wie bisher (alle Einteilungen, DE/TR)"):
+        _render_positionsliste_alt(positionen)
 
 
 # --- Datenquelle (Upload / Ordner) -------------------------------------------
@@ -1190,7 +1309,7 @@ def render_dispo_tab() -> None:
                 with reiter_langfrist:
                     _render_langfrist_tab(positionen, artikel)
                 with reiter_export:
-                    _render_export_tab(positionen)
+                    _render_export_tab(daten)
         else:
             st.info("Bitte unten SAP-Exporte hochladen, um das Dashboard zu sehen.")
 
