@@ -2,7 +2,7 @@
 Kundenauftraegen (Dashboard Dispo: Bedarf) und Bestand erzeugen.
 
 Nutzt die vom Kunden bereitgestellte Excel-Vorlage (dispo_dashboard/
-planung_vorlage.xlsx, alle 17 Blaetter inkl. Referenzdaten/Formeln bleiben
+planung_vorlage.xlsx, alle 18 Blaetter inkl. Referenzdaten/Formeln bleiben
 unveraendert) und befuellt nur die hellgrauen Eingabespalten in den
 Blaettern "Almanca" (Hauptplanung), "Rueckstaende" und "DHL UPS".
 
