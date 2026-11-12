@@ -132,22 +132,33 @@ Produktion in der Türkei schickt (`produktionsbericht.py`). Spaltenköpfe und
 Stufen stehen zweisprachig (DE/TR), die Hinweistexte wahlweise Türkisch oder
 Deutsch.
 
-- **Übersicht** – eine Zeile je Artikel, dringendste zuerst:
+- **Übersicht** – oben ein kleines Dashboard (Kacheln: Artikel je
+  Dringlichkeit mit Mengen, Unterwegs/NRI, Fehlt gesamt; Diagramme „Artikel je
+  Dringlichkeit“ und „Alle Artikel je Woche“), einklappbar über die
+  Gliederung. Darunter eine Zeile je Artikel, dringendste zuerst:
   1 Rückstand fehlt → 2 Rückstand unterwegs → 3 Engpass in der Reaktionszeit
-  der Türkei (Standard 14 Tage) → 4 später (Standard bis 22 Wochen).
+  der Türkei (Standard 14 Tage) → 4 später (Standard bis 22 Wochen), mit
+  Ø Bedarf je Woche und Reichweite (Bestand + unterwegs in Wochen).
   „Fehlt“ = weder bei uns noch unterwegs. Notizspalten für Dispo (blau) und
   Produktion (orange).
-- **Details** – je Artikel ein Block: Unterwegs (NRI, Ankunft), jede
-  Einteilung im Rückstand und in der Reaktionszeit mit „rechtzeitig gedeckt /
-  kommt später / fehlt“ und Hinweis (welche NRI, wie viele Tage zu spät,
-  Transportart für pünktliche Lieferung), danach spätere Wochen mit Fehlmenge.
+- **Details** – je Artikel ein Block: Bestandsprognose als Diagramm (wie die
+  verfügbare Menge in SAP MD04: grün = Bestand, rot = Fehlmenge unter null,
+  grau = Bedarf, blau = Zulauf/NRI), daneben Kennzahlen (Bestand, Unterwegs,
+  Fehlt, Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag) und Bedarf je
+  Kunde; dann Unterwegs (NRI, Ankunft), jede Einteilung im Rückstand und in
+  der Reaktionszeit mit „rechtzeitig gedeckt / kommt später / fehlt“ und
+  Hinweis (welche NRI, wie viele Tage zu spät, Transportart für pünktliche
+  Lieferung), danach spätere Wochen mit Fehlmenge. In der App zeigt ein Klick
+  auf eine Zeile der Vorschau dieselbe Prognose interaktiv.
 - **Wochen** – Bedarf / Zulauf / Fehlt je Kalenderwoche bis zum Vorschauende.
 - **Unterwegs** – alle Zugänge (ZMM1000) mit NRI.
 - **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen.
 
 Deckung je Einteilung wie in `dispo_dashboard/logic.py` (Bestand, dann Zugänge
 nach Ankunft); „kommt später“ + „fehlt“ ergibt genau die Fehlmenge des
-Dashboards. Notizen: den zuletzt verschickten/zurückbekommenen Bericht
+Dashboards. Ø Bedarf = offene Mengen bis zum Horizont geteilt durch die
+Wochen, die der Bedarfsexport abdeckt (Basis steht im Bericht). Die Zahlen
+hinter den Diagrammen liegen im ausgeblendeten Blatt „Diagrammdaten“. Notizen: den zuletzt verschickten/zurückbekommenen Bericht
 hochladen, dann werden die Notizen je Artikel übernommen. Für die
 Wochenvorschau muss der Bedarfsexport aus SAP entsprechend weit reichen.
 

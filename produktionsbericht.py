@@ -7,13 +7,20 @@ Notizen hinein; beim naechsten Bericht werden sie uebernommen (letzten Bericht
 hochladen).
 
 Blaetter:
-  Uebersicht  eine Zeile je Artikel, dringendste zuerst, mit Notizspalten
-              (Dispo / Produktion) - hier werden die Notizen geschrieben.
-  Details     je Artikel ein Block: Unterwegs (NRI), Rueckstand, naechste
-              Tage (Reaktionszeit Tuerkei), spaetere Wochen mit Fehlmenge.
+  Uebersicht  oben ein kleines Dashboard (Kacheln: Artikel je Dringlichkeit,
+              Fehlmengen, Unterwegs; Diagramme: Artikel je Stufe, Bedarf /
+              Zulauf / Fehlt je Woche), darunter eine Zeile je Artikel,
+              dringendste zuerst, mit Notizspalten (Dispo / Produktion).
+  Details     je Artikel ein Block: Bestandsprognose als Diagramm (Bestand
+              faellt mit dem Bedarf, steigt mit jedem Zugang; unter null =
+              Fehlmenge - wie die "verfuegbare Menge" in SAP MD04), Kennzahlen
+              (Durchschnittsbedarf je Woche / Monat, auch je Kunde, Reichweite),
+              danach Unterwegs (NRI), Rueckstand, naechste Tage (Reaktionszeit
+              Tuerkei), spaetere Wochen mit Fehlmenge.
   Wochen      Bedarf / Zulauf / Fehlt je Kalenderwoche bis zum Horizont.
   Unterwegs   alle Zugaenge zu uns (ZMM1000) mit NRI.
   Notizen-Archiv  Notizen von Artikeln, die gerade nicht im Bericht stehen.
+  Diagrammdaten   (ausgeblendet) Zahlen hinter den Diagrammen.
 
 Rechnet nur mit den Spalten, die logic.berechne bereits liefert (Offene Menge,
 Kum. Bedarf Artikel, Bestand verfuegbar) und den vorbereiteten Zugaengen -
@@ -24,6 +31,12 @@ zuerst Bestand bei uns, dann die Zugaenge in Reihenfolge der Ankunft.
   spaet        durch einen Zugang, der erst nach dem Ladedatum ankommt
   fehlt        weder bei uns noch unterwegs -> muss aus der Tuerkei kommen
 (spaet + fehlt = Fehlmenge aus logic.py)
+
+Durchschnittsbedarf: offene Mengen im Bedarfsexport (bis zum Horizont) geteilt
+durch die Wochen, die der Export abdeckt (vom aeltesten Ladedatum bis zum
+letzten Ladedatum im Export, hoechstens bis zum Horizont). Reicht der Export
+nur wenige Tage, ist der Durchschnitt entsprechend grob - die Basis steht im
+Bericht dabei.
 """
 from __future__ import annotations
 
@@ -31,6 +44,10 @@ import io
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
+from openpyxl.chart import AreaChart, BarChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
+from openpyxl.formatting.rule import DataBarRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.hyperlink import Hyperlink
@@ -42,20 +59,26 @@ BLATT_DETAILS = "Details - Detay"
 BLATT_WOCHEN = "Wochen - Haftalık"
 BLATT_UNTERWEGS = "Unterwegs - Yolda"
 BLATT_ARCHIV = "Notizen-Archiv - Not arşivi"
+BLATT_DATEN = "Diagrammdaten"
 
-KOPFZEILE = 4
+KOPFZEILE = 4            # Details, Wochen, Unterwegs, Archiv
 ERSTE_ZEILE = 5
+UEBERSICHT_KOPFZEILE = 22   # Uebersicht: darueber das Dashboard
+UEBERSICHT_ERSTE_ZEILE = UEBERSICHT_KOPFZEILE + 1
+DASHBOARD_ZEILEN = (4, UEBERSICHT_KOPFZEILE - 1)   # gruppiert (einklappbar)
 
 STANDARD_REAKTION_TAGE = 14
 STANDARD_WOCHEN = 22
+DIAGRAMM_ZEILEN = 15       # Hoehe des Prognose-Diagramms je Artikelblock (Zeilen)
+MAX_KUNDEN_IM_BLOCK = 5
 
 # Dringlichkeitsstufen je Artikel (Sortierung: Stufe, dann erster Engpass)
 STUFEN = {
-    1: {"de": "Rückstand – fehlt", "tr": "Gecikme – eksik", "fill": "FFC7CE", "font": "9C0006"},
-    2: {"de": "Rückstand – unterwegs", "tr": "Gecikme – yolda", "fill": "F8CBAD", "font": "833C0B"},
-    3: {"de": "Engpass ≤ {tage} Tage", "tr": "Darboğaz ≤ {tage} gün", "fill": "FFEB9C", "font": "7F6000"},
-    4: {"de": "Später ≤ {wochen} Wochen", "tr": "İleride ≤ {wochen} hafta", "fill": "DDEBF7", "font": "1F4E78"},
-    5: {"de": "Gedeckt", "tr": "Karşılandı", "fill": "C6EFCE", "font": "006100"},
+    1: {"de": "Rückstand – fehlt", "tr": "Gecikme – eksik", "fill": "FFC7CE", "font": "9C0006", "balken": "C00000"},
+    2: {"de": "Rückstand – unterwegs", "tr": "Gecikme – yolda", "fill": "F8CBAD", "font": "833C0B", "balken": "ED7D31"},
+    3: {"de": "Engpass ≤ {tage} Tage", "tr": "Darboğaz ≤ {tage} gün", "fill": "FFEB9C", "font": "7F6000", "balken": "FFC000"},
+    4: {"de": "Später ≤ {wochen} Wochen", "tr": "İleride ≤ {wochen} hafta", "fill": "DDEBF7", "font": "1F4E78", "balken": "5B9BD5"},
+    5: {"de": "Gedeckt", "tr": "Karşılandı", "fill": "C6EFCE", "font": "006100", "balken": "70AD47"},
 }
 
 TRANSPORT_TR = {"Luftfracht": "Hava kargo", "Minivan": "Minivan", "Express LKW": "Ekspres kamyon", "LKW": "Kamyon"}
@@ -109,6 +132,10 @@ def _stufe_zweisprachig(stufe: int, reaktion_tage: int, wochen: int) -> str:
     return f"{_stufe_text(stufe, reaktion_tage, wochen, 'de')}\n{_stufe_text(stufe, reaktion_tage, wochen, 'tr')}"
 
 
+def _wochen_text(wert) -> str:
+    return "–" if wert is None or pd.isna(wert) else f"{float(wert):.1f}".replace(".", ",")
+
+
 # --- Berechnung --------------------------------------------------------------
 
 def _segmente(bestand: float, zugaenge: pd.DataFrame) -> list[tuple]:
@@ -128,6 +155,49 @@ def _segmente(bestand: float, zugaenge: pd.DataFrame) -> list[tuple]:
     return segmente
 
 
+def _bestandsverlauf(bestand: float, zeilen: pd.DataFrame, zugaenge: pd.DataFrame, st, horizont) -> dict:
+    """Bestandsprognose je Tag (wie die laufende verfuegbare Menge in MD04):
+    Kategorie 0 = Bestand heute, 1 = nach Abzug des Rueckstands (Ladedatum bis
+    Stichtag, inkl. Zugaenge mit Ankunft bis Stichtag), danach je Kalendertag
+    bis zum Horizont. Rueckgabe: labels, tage, bedarf, zulauf, bestand,
+    bestand_plus (>= 0), fehl_minus (<= 0), erster_fehltag (Label oder None)."""
+    tage = list(pd.date_range(st + pd.Timedelta(days=1), horizont, freq="D"))
+    n = len(tage) + 2
+    bedarf, zulauf = [0.0] * n, [0.0] * n
+    for _, z in zeilen.iterrows():
+        d = pd.Timestamp(z["Ladedatum"]).normalize()
+        i = 1 if d <= st else (d - st).days + 1
+        if i < n:
+            bedarf[i] += float(z["Offen"])
+    for _, z in zugaenge.iterrows():
+        d = pd.Timestamp(z["Ankunft gerechnet"]).normalize()
+        i = 1 if d <= st else (d - st).days + 1
+        if i < n:
+            zulauf[i] += float(z["Menge"])
+    verlauf, stand = [], float(bestand)
+    for i in range(n):
+        stand = stand + zulauf[i] - bedarf[i]
+        verlauf.append(stand)
+    labels = ["Bestand / Stok", f"bis / {st:%d.%m.} dahil"] + [f"{d:%d.%m.}" for d in tage]
+    erster = next((i for i, v in enumerate(verlauf) if v < -1e-9), None)
+    if erster is None:
+        erster_fehltag = None
+    elif erster <= 1:
+        erster_fehltag = "sofort"
+    else:
+        erster_fehltag = tage[erster - 2]
+    return {
+        "labels": labels,
+        "tage": [None, st] + tage,
+        "bedarf": bedarf,
+        "zulauf": zulauf,
+        "bestand": verlauf,
+        "bestand_plus": [max(v, 0.0) for v in verlauf],
+        "fehl_minus": [min(v, 0.0) for v in verlauf],
+        "erster_fehltag": erster_fehltag,
+    }
+
+
 def berechne_bericht(
     positionen: pd.DataFrame,
     zugang: pd.DataFrame | None,
@@ -137,13 +207,16 @@ def berechne_bericht(
     gedeckte_aufnehmen: bool = False,
 ) -> dict:
     """Rechnet alles fuer den Bericht. Rueckgabe-dict:
-    artikel   DataFrame je Artikel (sortiert, mit Stufe/Rang)
+    artikel   DataFrame je Artikel (sortiert, mit Stufe/Rang, Ø-Bedarf, Reichweite)
     zeilen    DataFrame je offener Einteilung im Horizont (mit Deckungsherkunft)
-    unterwegs DataFrame der Zugaenge (nur Artikel im Bericht)
+    unterwegs DataFrame der Zugaenge (nur Artikel im Bericht), alle_zugaenge alle
     wochen    Liste der Wochenanfaenge (Montag) der Spalten nach "bis heute"
     matrix    {Norm-Nr: {"bedarf": [...], "zulauf": [...], "fehlt": [...]}}
               Index 0 = bis einschliesslich Stichtag, dann je Woche
-    sowie stichtag, reaktion_tage, wochen_horizont."""
+    verlauf   {Norm-Nr: Bestandsprognose je Tag} (siehe _bestandsverlauf)
+    kunden    {Norm-Nr: DataFrame Kunde / Bedarf / Ø Woche / Ø Monat / Anteil}
+    dashboard Kennzahlen fuer das Dashboard (je Stufe, Wochensummen, Unterwegs)
+    sowie stichtag, reaktion_tage, wochen_horizont, horizont, basis (Ø-Basis)."""
     st = pd.Timestamp(stichtag).normalize()
     grenze_kurz = st + pd.Timedelta(days=int(reaktion_tage))
     horizont = st + pd.Timedelta(days=7 * int(wochen))
@@ -212,8 +285,8 @@ def berechne_bericht(
             })
     zeilen_df = pd.DataFrame(zeilen)
     if zeilen_df.empty:
-        zeilen_df = pd.DataFrame(columns=["Norm-Nr", "Bereich", "Ladedatum", "Offen", "Fehlt", "Spaet",
-                                          "Rechtzeitig", "Aus Bestand", "Rechtzeitig unterwegs"])
+        zeilen_df = pd.DataFrame(columns=["Position", "Norm-Nr", "Bereich", "Ladedatum", "Kunde", "Offen", "Fehlt",
+                                          "Spaet", "Rechtzeitig", "Aus Bestand", "Rechtzeitig unterwegs"])
 
     erste = positionen.drop_duplicates("Norm-Nr").set_index("Norm-Nr")
     stammdaten = pd.DataFrame({
@@ -221,6 +294,15 @@ def berechne_bericht(
         "Kurztext": erste["Kurztext"].fillna("").astype(str),
         "Bestand": pd.to_numeric(erste["Bestand verfügbar"], errors="coerce").fillna(0.0),
     }, index=erste.index)
+
+    # Basis fuer den Durchschnittsbedarf: Zeitraum, den der Bedarfsexport abdeckt
+    if zeilen_df.empty:
+        basis_von, basis_bis = st, st
+    else:
+        basis_von = min(st, zeilen_df["Ladedatum"].min())
+        basis_bis = min(horizont, zeilen_df["Ladedatum"].max())
+    wochen_basis = max(1.0, ((basis_bis - basis_von).days + 1) / 7.0)
+    basis = {"von": basis_von, "bis": basis_bis, "wochen": wochen_basis}
 
     artikel = []
     for norm_nr, z in zeilen_df.groupby("Norm-Nr", sort=False):
@@ -241,13 +323,17 @@ def berechne_bericht(
             stufe = 5
         zg = zugang_je_artikel.get(norm_nr, zugang.iloc[0:0])
         kunden = sorted({k for k in z["Kunde"] if k})
+        bestand = float(stammdaten.at[norm_nr, "Bestand"])
+        unterwegs_menge = float(zg["Menge"].sum()) if not zg.empty else 0.0
+        bedarf_gesamt = float(z["Offen"].sum())
+        je_woche = bedarf_gesamt / wochen_basis
         artikel.append({
             "Norm-Nr": norm_nr,
             "VW-Nr": stammdaten.at[norm_nr, "VW-Nr"],
             "Kurztext": stammdaten.at[norm_nr, "Kurztext"],
             "Kunden": ", ".join(kunden),
-            "Bestand": float(stammdaten.at[norm_nr, "Bestand"]),
-            "Unterwegs": float(zg["Menge"].sum()) if not zg.empty else 0.0,
+            "Bestand": bestand,
+            "Unterwegs": unterwegs_menge,
             "Anzahl NRI": int(zg["Referenz"].replace("", pd.NA).dropna().nunique()) if not zg.empty else 0,
             "Nächste Ankunft": zg["Ankunft gerechnet"].min() if not zg.empty else pd.NaT,
             "Rückstand fehlt": float(rueck["Fehlt"].sum()),
@@ -257,7 +343,10 @@ def berechne_bericht(
             "Später fehlt": float(lang["Fehlt"].sum()),
             "Fehlt gesamt": float(z["Fehlt"].sum()),
             "Erster Engpass": erster,
-            "Bedarf Horizont": float(z["Offen"].sum()),
+            "Bedarf Horizont": bedarf_gesamt,
+            "Ø Woche": je_woche,
+            "Ø Monat": je_woche * 52.0 / 12.0,
+            "Reichweite Wochen": ((bestand + unterwegs_menge) / je_woche) if je_woche > 0 else None,
             "Stufe": stufe,
         })
     artikel_df = pd.DataFrame(artikel)
@@ -295,19 +384,58 @@ def berechne_bericht(
             return None
         return (_montag(datum) - erste_woche).days // 7 + 1
 
-    matrix = {}
+    matrix, verlauf, kunden_je_artikel = {}, {}, {}
     for norm_nr in artikel_df["Norm-Nr"]:
+        az = zeilen_df[zeilen_df["Norm-Nr"] == norm_nr]
+        zg = unterwegs[unterwegs["Norm-Nr"] == norm_nr]
         werte = {k: [0.0] * (anzahl + 1) for k in ("bedarf", "zulauf", "fehlt")}
-        for _, z in zeilen_df[zeilen_df["Norm-Nr"] == norm_nr].iterrows():
+        for _, z in az.iterrows():
             i = _spalte(z["Ladedatum"])
             if i is not None:
                 werte["bedarf"][i] += z["Offen"]
                 werte["fehlt"][i] += z["Fehlt"]
-        for _, z in unterwegs[unterwegs["Norm-Nr"] == norm_nr].iterrows():
+        for _, z in zg.iterrows():
             i = _spalte(z["Ankunft gerechnet"])
             if i is not None:
                 werte["zulauf"][i] += float(z["Menge"])
         matrix[norm_nr] = werte
+        verlauf[norm_nr] = _bestandsverlauf(float(stammdaten.at[norm_nr, "Bestand"]), az, zg, st, horizont)
+        je_kunde = az.groupby("Kunde")["Offen"].sum().sort_values(ascending=False)
+        gesamt = float(je_kunde.sum()) or 1.0
+        kunden_je_artikel[norm_nr] = pd.DataFrame({
+            "Kunde": [k or "–" for k in je_kunde.index],
+            "Bedarf": je_kunde.values,
+            "Ø Woche": je_kunde.values / wochen_basis,
+            "Ø Monat": je_kunde.values / wochen_basis * 52.0 / 12.0,
+            "Anteil": je_kunde.values / gesamt,
+        })
+
+    # Dashboard-Kennzahlen
+    if artikel_df.empty:
+        je_stufe = {s: {"anzahl": 0, "menge": 0.0} for s in STUFEN}
+        wochen_summen = {k: [0.0] * (anzahl + 1) for k in ("bedarf", "zulauf", "fehlt")}
+    else:
+        mengen_spalte = {1: "Rückstand fehlt", 2: "Rückstand später", 3: "Kurz fehlt", 4: "Später fehlt", 5: "Bedarf Horizont"}
+        je_stufe = {
+            s: {"anzahl": int((artikel_df["Stufe"] == s).sum()),
+                "menge": float(artikel_df.loc[artikel_df["Stufe"] == s, mengen_spalte[s]].sum())}
+            for s in STUFEN
+        }
+        wochen_summen = {
+            k: [sum(matrix[n][k][i] for n in matrix) for i in range(anzahl + 1)]
+            for k in ("bedarf", "zulauf", "fehlt")
+        }
+    dashboard = {
+        "artikel": int(len(artikel_df)),
+        "je_stufe": je_stufe,
+        "fehlt_gesamt": float(artikel_df["Fehlt gesamt"].sum()) if not artikel_df.empty else 0.0,
+        "rueckstand_spaeter": float(artikel_df["Rückstand später"].sum()) if not artikel_df.empty else 0.0,
+        "nri": int(alle_zugaenge["Referenz"].replace("", pd.NA).dropna().nunique()) if not alle_zugaenge.empty else 0,
+        "nri_bericht": int(unterwegs["Referenz"].replace("", pd.NA).dropna().nunique()) if not unterwegs.empty else 0,
+        "unterwegs_menge": float(unterwegs["Menge"].sum()) if not unterwegs.empty else 0.0,
+        "naechste_ankunft": unterwegs["Ankunft gerechnet"].min() if not unterwegs.empty else pd.NaT,
+        "wochen_summen": wochen_summen,
+    }
 
     return {
         "artikel": artikel_df,
@@ -317,6 +445,10 @@ def berechne_bericht(
         "stammdaten": stammdaten,
         "wochen": wochen_liste,
         "matrix": matrix,
+        "verlauf": verlauf,
+        "kunden": kunden_je_artikel,
+        "dashboard": dashboard,
+        "basis": basis,
         "stichtag": st,
         "reaktion_tage": int(reaktion_tage),
         "wochen_horizont": int(wochen),
@@ -325,6 +457,16 @@ def berechne_bericht(
 
 
 # --- Notizen aus einem frueheren Bericht -------------------------------------
+
+def _finde_kopfzeile(ws, max_zeile: int = 60) -> int | None:
+    """Zeile, in der die Tabellenueberschrift steht (Spalte A beginnt mit 'Nr.'
+    bzw. 'Norm-Nr' im Archiv) - unabhaengig von der Hoehe des Dashboards."""
+    for r in range(1, min(ws.max_row, max_zeile) + 1):
+        text = str(ws.cell(r, 1).value or "")
+        if text.startswith("Nr.") or text.startswith("Norm-Nr"):
+            return r
+    return None
+
 
 def _kopf_spalten(ws, zeile: int) -> dict:
     spalten = {}
@@ -361,11 +503,14 @@ def lese_notizen(inhalt: bytes) -> dict:
         if blatt not in wb.sheetnames:
             continue
         ws = wb[blatt]
-        spalten = _kopf_spalten(ws, KOPFZEILE)
+        kopf = _finde_kopfzeile(ws)
+        if kopf is None:
+            continue
+        spalten = _kopf_spalten(ws, kopf)
         s_norm, s_dispo, s_prod = spalten.get("Norm-Nr"), spalten.get("Notiz Dispo"), spalten.get("Notiz Produktion")
         if not (s_norm and (s_dispo or s_prod)):
             continue
-        for r in range(ERSTE_ZEILE, ws.max_row + 1):
+        for r in range(kopf + 1, ws.max_row + 1):
             _merken(ws.cell(r, s_norm).value,
                     _notiz_wert(ws.cell(r, s_dispo).value) if s_dispo else "",
                     _notiz_wert(ws.cell(r, s_prod).value) if s_prod else "")
@@ -389,10 +534,12 @@ _KOPF_FUELLUNG = PatternFill("solid", fgColor="1F4E78")
 _KOPF_SCHRIFT = Font(bold=True, color="FFFFFF", size=10)
 _DISPO_FUELLUNG = PatternFill("solid", fgColor="DDEBF7")
 _PROD_FUELLUNG = PatternFill("solid", fgColor="FCE4D6")
+_PANEL_FUELLUNG = PatternFill("solid", fgColor="F2F2F2")
 _GRAU = Font(color="808080", size=10)
 _MENGE = '#,##0;-#,##0;""'
 _MENGE_NULL = "#,##0"
 _DATUM = "DD.MM.YYYY"
+_PROZENT = "0%"
 
 UEBERSICHT_SPALTEN = [
     # (Kopf DE, Kopf TR, Breite)
@@ -404,6 +551,8 @@ UEBERSICHT_SPALTEN = [
     ("Bestand bei uns", "Bizdeki stok", 12),
     ("Unterwegs", "Yolda", 11),
     ("Nächste Ankunft", "Sonraki varış", 12),
+    ("Ø Bedarf je Woche", "Haftalık ort. ihtiyaç", 12),
+    ("Reichweite (Wochen)", "Yeterlilik (hafta)", 11),
     ("Rückstand fehlt", "Gecikme – eksik", 12),
     ("Rückstand kommt später", "Gecikme – geç geliyor", 13),
     ("Fehlt ≤ {tage} Tage", "Eksik ≤ {tage} gün", 12),
@@ -412,7 +561,8 @@ UEBERSICHT_SPALTEN = [
     ("Notiz Dispo", "Dispo notu", 42),
     ("Notiz Produktion", "Üretim notu (Türkiye)", 42),
 ]
-U_NORM, U_NOTIZ_DISPO, U_NOTIZ_PROD = 3, 14, 15
+U_NORM, U_NOTIZ_DISPO, U_NOTIZ_PROD = 3, 16, 17
+_U_SPALTE = {name: i for i, (name, _, _) in enumerate(UEBERSICHT_SPALTEN, start=1)}
 
 DETAIL_SPALTEN = [
     ("Bereich", "Bölüm", 19),
@@ -429,6 +579,7 @@ DETAIL_SPALTEN = [
     ("Norm-Nr (intern)", "", 2),
 ]
 DETAIL_NOTIZ_DISPO, DETAIL_NOTIZ_PROD, DETAIL_NORM_SPALTE = 10, 11, 12
+_PANEL_SPALTE = 9   # Kennzahlen-Panel im Artikelblock: Spalten I..K
 
 UNTERWEGS_SPALTEN = [
     ("NRI", "NRI", 19),
@@ -444,16 +595,17 @@ UNTERWEGS_SPALTEN = [
 ]
 
 
-def _kopf(ws, spalten, reaktion_tage: int = STANDARD_REAKTION_TAGE, wochen: int = STANDARD_WOCHEN) -> None:
+def _kopf(ws, spalten, reaktion_tage: int = STANDARD_REAKTION_TAGE, wochen: int = STANDARD_WOCHEN,
+          zeile: int = KOPFZEILE) -> None:
     for i, (de, tr, breite) in enumerate(spalten, start=1):
         text = f"{de.format(tage=reaktion_tage, wochen=wochen)}\n{tr.format(tage=reaktion_tage, wochen=wochen)}".strip()
-        zelle = ws.cell(KOPFZEILE, i, value=text)
+        zelle = ws.cell(zeile, i, value=text)
         zelle.fill = _KOPF_FUELLUNG
         zelle.font = _KOPF_SCHRIFT
         zelle.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
         zelle.border = _RAHMEN
         ws.column_dimensions[get_column_letter(i)].width = breite
-    ws.row_dimensions[KOPFZEILE].height = 48
+    ws.row_dimensions[zeile].height = 48
 
 
 def _titel(ws, titel_de: str, titel_tr: str, stand: pd.Timestamp, zeilen: list[str]) -> None:
@@ -462,13 +614,13 @@ def _titel(ws, titel_de: str, titel_tr: str, stand: pd.Timestamp, zeilen: list[s
         ws.cell(i, 1, value=text).font = Font(size=9, color="595959")
 
 
-def _druck(ws) -> None:
+def _druck(ws, kopfzeile: int = KOPFZEILE) -> None:
     ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
-    ws.print_title_rows = f"{KOPFZEILE}:{KOPFZEILE}"
+    ws.print_title_rows = f"{kopfzeile}:{kopfzeile}"
     ws.print_options.gridLines = False
 
 
@@ -481,62 +633,284 @@ def _datum_wert(wert):
     return pd.Timestamp(wert).to_pydatetime() if pd.notna(wert) else None
 
 
-def _schreibe_uebersicht(ws, bericht: dict, notizen: dict) -> dict:
+def _achsen_sichtbar(chart) -> None:
+    # openpyxl 3.1 laesst Achsen sonst in Excel weg
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+
+
+# --- Diagrammdaten (ausgeblendetes Blatt) ------------------------------------
+
+def _schreibe_diagrammdaten(ws, bericht: dict, sprache: str = "TR") -> dict:
+    """Schreibt die Zahlen hinter allen Diagrammen. Rueckgabe: Zeilen-Positionen
+    {"stufen": (kopf, erste, letzte), "wochen": (...), "artikel": {Norm-Nr: (kopf, n)}}."""
+    rt, wo, st = bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
+    ws.sheet_state = "hidden"
+    ws.cell(1, 1, value="Zahlen hinter den Diagrammen - bitte nicht aendern / Grafiklerin verileri - lütfen değiştirmeyin")
+    # Artikel je Stufe
+    ws.cell(2, 1, value="Dringlichkeit / Aciliyet")
+    ws.cell(2, 2, value="Artikel / Parça")
+    ws.cell(2, 3, value="Menge / Miktar")
+    for i, stufe in enumerate((1, 2, 3, 4), start=3):
+        ws.cell(i, 1, value=_stufe_text(stufe, rt, wo, "de"))
+        ws.cell(i, 2, value=bericht["dashboard"]["je_stufe"][stufe]["anzahl"])
+        ws.cell(i, 3, value=bericht["dashboard"]["je_stufe"][stufe]["menge"])
+    positionen = {"stufen": (2, 3, 6)}
+    # Wochen-Summen
+    kopf = 8
+    ws.cell(kopf, 1, value="Woche / Hafta")
+    ws.cell(kopf, 2, value="Bedarf / İhtiyaç")
+    ws.cell(kopf, 3, value="Zulauf / Gelecek")
+    ws.cell(kopf, 4, value="Fehlt / Eksik")
+    labels = [f"≤ {st:%d.%m.}"] + [f"KW {w.isocalendar()[1]}" for w in bericht["wochen"]]
+    summen = bericht["dashboard"]["wochen_summen"]
+    for i, label in enumerate(labels):
+        ws.cell(kopf + 1 + i, 1, value=label)
+        for s, k in enumerate(("bedarf", "zulauf", "fehlt"), start=2):
+            ws.cell(kopf + 1 + i, s, value=summen[k][i])
+    positionen["wochen"] = (kopf, kopf + 1, kopf + len(labels))
+    # Bestandsprognose je Artikel
+    zeile = kopf + len(labels) + 3
+    positionen["artikel"] = {}
+    for norm, v in bericht["verlauf"].items():
+        ws.cell(zeile, 1, value=f"Artikel {norm}")
+        kopf = zeile + 1
+        for s, text in enumerate(("Zeitpunkt / Zaman", "Bedarf / İhtiyaç", "Zulauf / Gelecek",
+                                  "Bestand / Stok", "Fehlmenge / Eksik"), start=1):
+            ws.cell(kopf, s, value=text)
+        n = len(v["labels"])
+        start_labels = ("Bestand", "Rückst.") if sprache == "DE" else ("Stok", "Gecikme")
+        for i in range(n):
+            ws.cell(kopf + 1 + i, 1, value=start_labels[i] if i < 2 else v["labels"][i])
+            ws.cell(kopf + 1 + i, 2, value=v["bedarf"][i])
+            ws.cell(kopf + 1 + i, 3, value=v["zulauf"][i])
+            ws.cell(kopf + 1 + i, 4, value=v["bestand_plus"][i])
+            ws.cell(kopf + 1 + i, 5, value=v["fehl_minus"][i])
+        positionen["artikel"][norm] = (kopf, n)
+        zeile = kopf + n + 2
+    return positionen
+
+
+def _bestandsdiagramm(ws_daten, kopf: int, n: int, titel: str):
+    """Bestandsprognose: gruene Flaeche = Bestand, rote Flaeche = Fehlmenge
+    (unter null), graue Balken = Bedarf, blaue Balken = Zulauf."""
+    area = AreaChart()
+    area.grouping = "standard"
+    area.add_data(Reference(ws_daten, min_col=4, max_col=5, min_row=kopf, max_row=kopf + n), titles_from_data=True)
+    area.set_categories(Reference(ws_daten, min_col=1, min_row=kopf + 1, max_row=kopf + n))
+    for s, fuellung, rand in zip(area.series, ("C6EFCE", "FFC7CE"), ("548235", "C00000")):
+        s.graphicalProperties.solidFill = fuellung
+        s.graphicalProperties.line.solidFill = rand
+        s.graphicalProperties.line.width = 19050
+    bar = BarChart()
+    bar.type = "col"
+    bar.grouping = "clustered"
+    bar.gapWidth = 30
+    bar.add_data(Reference(ws_daten, min_col=2, max_col=3, min_row=kopf, max_row=kopf + n), titles_from_data=True)
+    bar.series[0].graphicalProperties.solidFill = "7F7F7F"
+    bar.series[1].graphicalProperties.solidFill = "2E75B6"
+    area += bar   # Kombi-Diagramm: Flaechen + Balken auf denselben Achsen
+    area.title = titel
+    area.x_axis.tickLblSkip = 7
+    area.x_axis.tickMarkSkip = 7
+    area.y_axis.number_format = "#,##0"
+    area.y_axis.title = "Stück / Adet"
+    area.legend.position = "b"
+    area.height = 7.9
+    area.width = 24.0
+    _achsen_sichtbar(area)
+    return area
+
+
+def _stufen_diagramm(ws_daten, position: tuple, titel: str):
+    kopf, erste, letzte = position
+    bar = BarChart()
+    bar.type = "bar"
+    bar.add_data(Reference(ws_daten, min_col=2, min_row=kopf, max_row=letzte), titles_from_data=True)
+    bar.set_categories(Reference(ws_daten, min_col=1, min_row=erste, max_row=letzte))
+    for i, stufe in enumerate((1, 2, 3, 4)):
+        punkt = DataPoint(idx=i)
+        punkt.graphicalProperties.solidFill = STUFEN[stufe]["balken"]
+        bar.series[0].dPt.append(punkt)
+    bar.series[0].graphicalProperties.solidFill = "A6A6A6"
+    bar.dataLabels = DataLabelList()
+    bar.dataLabels.showVal = True
+    bar.dataLabels.showCatName = False
+    bar.dataLabels.showSerName = False
+    bar.dataLabels.showLegendKey = False
+    bar.dataLabels.showPercent = False
+    bar.legend = None
+    bar.title = titel
+    bar.x_axis.scaling.orientation = "maxMin"   # Stufe 1 oben
+    bar.y_axis.majorGridlines = None
+    bar.y_axis.number_format = "0"
+    bar.gapWidth = 60
+    bar.height = 6.0
+    bar.width = 10.5
+    _achsen_sichtbar(bar)
+    bar.y_axis.delete = True
+    return bar
+
+
+def _wochen_diagramm(ws_daten, position: tuple, titel: str):
+    kopf, erste, letzte = position
+    bar = BarChart()
+    bar.type = "col"
+    bar.grouping = "clustered"
+    bar.gapWidth = 40
+    bar.add_data(Reference(ws_daten, min_col=2, max_col=4, min_row=kopf, max_row=letzte), titles_from_data=True)
+    bar.set_categories(Reference(ws_daten, min_col=1, min_row=erste, max_row=letzte))
+    for s, farbe in zip(bar.series, ("A6A6A6", "2E75B6", "C00000")):
+        s.graphicalProperties.solidFill = farbe
+    bar.title = titel
+    bar.y_axis.number_format = "#,##0"
+    bar.legend.position = "b"
+    bar.height = 6.0
+    bar.width = 21.0
+    _achsen_sichtbar(bar)
+    return bar
+
+
+# --- Uebersicht mit Dashboard ------------------------------------------------
+
+def _kachel(ws, zeile: int, von: int, bis: int, titel: str, wert, untertitel: str, fuellung: str, schrift: str) -> None:
+    for r, text, font in (
+        (zeile, titel, Font(bold=True, size=9, color=schrift)),
+        (zeile + 1, wert, Font(bold=True, size=20, color=schrift)),
+        (zeile + 2, untertitel, Font(size=9, color=schrift)),
+    ):
+        ws.merge_cells(start_row=r, start_column=von, end_row=r, end_column=bis)
+        zelle = ws.cell(r, von, value=text)
+        zelle.font = font
+        zelle.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for s in range(von, bis + 1):
+            ws.cell(r, s).fill = PatternFill("solid", fgColor=fuellung)
+            ws.cell(r, s).border = Border(
+                left=_DUENN if s == von else None, right=_DUENN if s == bis else None,
+                top=_DUENN if r == zeile else None, bottom=_DUENN if r == zeile + 2 else None,
+            )
+    ws.row_dimensions[zeile].height = 26
+    ws.row_dimensions[zeile + 1].height = 30
+    ws.row_dimensions[zeile + 2].height = 26
+
+
+def _schreibe_dashboard(ws, ws_daten, bericht: dict, daten_positionen: dict) -> None:
+    d, rt, wo, st = bericht["dashboard"], bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
+    s = d["je_stufe"]
+    ankunft = d["naechste_ankunft"]
+    kacheln = [
+        ("Artikel im Bericht\nRapordaki parça", d["artikel"],
+         f"davon Rückstand / gecikme: {s[1]['anzahl'] + s[2]['anzahl']}", "D9E1F2", "1F3864"),
+        ("Rückstand – fehlt\nGecikme – eksik", s[1]["anzahl"],
+         f"{_menge_text(s[1]['menge'])} Stück / adet", STUFEN[1]["fill"], STUFEN[1]["font"]),
+        ("Rückstand – unterwegs\nGecikme – yolda", s[2]["anzahl"],
+         f"{_menge_text(s[2]['menge'])} Stück kommen zu spät / geç geliyor", STUFEN[2]["fill"], STUFEN[2]["font"]),
+        (f"Engpass ≤ {rt} Tage\nDarboğaz ≤ {rt} gün", s[3]["anzahl"],
+         f"{_menge_text(s[3]['menge'])} Stück fehlen / eksik", STUFEN[3]["fill"], STUFEN[3]["font"]),
+        (f"Später ≤ {wo} Wochen\nİleride ≤ {wo} hafta", s[4]["anzahl"],
+         f"{_menge_text(s[4]['menge'])} Stück fehlen / eksik", STUFEN[4]["fill"], STUFEN[4]["font"]),
+        ("Unterwegs für diese Artikel (NRI)\nBu parçalar için yolda (NRI)", d["nri_bericht"],
+         f"{_menge_text(d['unterwegs_menge'])} Stück / adet"
+         + (f" · ab / ilk {_datum_kurz(ankunft)}" if pd.notna(ankunft) else "")
+         + f" · gesamt / toplam {d['nri']} NRI", "DEEBF7", "1F4E78"),
+        ("Fehlt gesamt\nToplam eksik", _menge_text(d["fehlt_gesamt"]),
+         "muss aus der Türkei kommen / Türkiye'den gelmeli", "F4CCCC", "9C0006"),
+    ]
+    bereiche = [(1, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13), (14, 15)]
+    for (titel, wert, unter, fuellung, schrift), (von, bis) in zip(kacheln, bereiche):
+        _kachel(ws, 5, von, bis, titel, wert, unter, fuellung, schrift)
+    if d["artikel"]:
+        ws.add_chart(_stufen_diagramm(ws_daten, daten_positionen["stufen"],
+                                      "Artikel je Dringlichkeit / Aciliyete göre parça"), "A9")
+        ws.add_chart(_wochen_diagramm(ws_daten, daten_positionen["wochen"],
+                                      "Alle Artikel je Woche / Tüm parçalar haftalık"), "F9")
+    else:
+        ws.cell(9, 1, value="Nichts zu melden: kein Rückstand und keine Fehlmenge im Vorschauzeitraum. / "
+                            "Bildirilecek bir şey yok.").font = Font(italic=True, color="006100")
+    for r in range(DASHBOARD_ZEILEN[0], DASHBOARD_ZEILEN[1] + 1):
+        ws.row_dimensions[r].outlineLevel = 1
+    ws.sheet_properties.outlinePr.summaryBelow = False
+
+
+def _schreibe_uebersicht(ws, ws_daten, bericht: dict, notizen: dict, daten_positionen: dict) -> dict:
     a = bericht["artikel"]
-    rt, wo = bericht["reaktion_tage"], bericht["wochen_horizont"]
+    rt, wo, basis = bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["basis"]
     _titel(ws, "Lieferübersicht für die Produktion", "Üretim için teslimat özeti", bericht["stichtag"], [
         "Reihenfolge: 1 Rückstand fehlt → 2 Rückstand unterwegs → 3 Engpass ≤ "
-        f"{rt} Tage → 4 später (bis {wo} Wochen). „Fehlt“ = weder bei uns noch unterwegs – "
-        "muss aus der Türkei kommen. Notizen in die blaue (Dispo) bzw. orange (Produktion) Spalte schreiben.",
+        f"{rt} Tage → 4 später (bis {wo} Wochen). „Fehlt“ = weder bei uns noch unterwegs – muss aus der Türkei "
+        "kommen. Notizen in die blaue (Dispo) bzw. orange (Produktion) Spalte. Klick auf die Norm-Nr → Details mit "
+        f"Bestandsprognose. Ø Bedarf aus {basis['von']:%d.%m.}–{basis['bis']:%d.%m.} ({_wochen_text(basis['wochen'])} Wochen).",
         "Sıralama: 1 Gecikme eksik → 2 Gecikme yolda → 3 Darboğaz ≤ "
-        f"{rt} gün → 4 ileride ({wo} haftaya kadar). „Eksik“ = ne depomuzda ne yolda – "
-        "Türkiye'den gelmesi gerekiyor. Notları mavi (Dispo) veya turuncu (Üretim) sütuna yazın.",
+        f"{rt} gün → 4 ileride ({wo} haftaya kadar). „Eksik“ = ne depomuzda ne yolda – Türkiye'den gelmesi "
+        "gerekiyor. Notları mavi (Dispo) veya turuncu (Üretim) sütuna yazın. Parça no'ya tıklayın → stok tahmini. "
+        f"Ort. ihtiyaç {basis['von']:%d.%m.}–{basis['bis']:%d.%m.} ({_wochen_text(basis['wochen'])} hafta) bazında.",
     ])
-    _kopf(ws, UEBERSICHT_SPALTEN, rt, wo)
+    _kopf(ws, UEBERSICHT_SPALTEN, rt, wo, zeile=UEBERSICHT_KOPFZEILE)
+    _schreibe_dashboard(ws, ws_daten, bericht, daten_positionen)
     zeilen_je_artikel = {}
-    for i, r in enumerate(a.itertuples(index=False), start=ERSTE_ZEILE):
-        norm = r[a.columns.get_loc("Norm-Nr")]
+    mengen = ("Bestand bei uns", "Unterwegs", "Ø Bedarf je Woche")
+    fehl = ("Rückstand fehlt", "Rückstand kommt später", "Fehlt ≤ {tage} Tage", "Fehlt später (bis {wochen} Wo.)")
+    daten = ("Nächste Ankunft", "Erster Engpass")
+    umbruch = ("Dringlichkeit", "Bezeichnung", "Notiz Dispo", "Notiz Produktion")
+    for i, r in enumerate(a.itertuples(index=False), start=UEBERSICHT_ERSTE_ZEILE):
         werte = {c: r[a.columns.get_loc(c)] for c in a.columns}
+        norm = werte["Norm-Nr"]
         zeilen_je_artikel[norm] = i
         n = notizen.get(norm, {})
-        inhalt = [
-            werte["Rang"],
-            _stufe_zweisprachig(werte["Stufe"], rt, wo),
-            norm,
-            werte["VW-Nr"] or None,
-            werte["Kurztext"] or None,
-            werte["Bestand"],
-            werte["Unterwegs"],
-            _datum_wert(werte["Nächste Ankunft"]),
-            werte["Rückstand fehlt"],
-            werte["Rückstand später"],
-            werte["Kurz fehlt"],
-            werte["Später fehlt"],
-            _datum_wert(werte["Erster Engpass"]),
-            n.get("dispo") or None,
-            n.get("produktion") or None,
-        ]
-        for s, wert in enumerate(inhalt, start=1):
+        reichweite = werte["Reichweite Wochen"]
+        inhalt = {
+            "Nr.": werte["Rang"],
+            "Dringlichkeit": _stufe_zweisprachig(werte["Stufe"], rt, wo),
+            "Norm-Nr": norm,
+            "VW-Nr": werte["VW-Nr"] or None,
+            "Bezeichnung": werte["Kurztext"] or None,
+            "Bestand bei uns": werte["Bestand"],
+            "Unterwegs": werte["Unterwegs"],
+            "Nächste Ankunft": _datum_wert(werte["Nächste Ankunft"]),
+            "Ø Bedarf je Woche": werte["Ø Woche"],
+            "Reichweite (Wochen)": None if reichweite is None or pd.isna(reichweite) else round(float(reichweite), 1),
+            "Rückstand fehlt": werte["Rückstand fehlt"],
+            "Rückstand kommt später": werte["Rückstand später"],
+            "Fehlt ≤ {tage} Tage": werte["Kurz fehlt"],
+            "Fehlt später (bis {wochen} Wo.)": werte["Später fehlt"],
+            "Erster Engpass": _datum_wert(werte["Erster Engpass"]),
+            "Notiz Dispo": n.get("dispo") or None,
+            "Notiz Produktion": n.get("produktion") or None,
+        }
+        for name, wert in inhalt.items():
+            s = _U_SPALTE[name]
             zelle = ws.cell(i, s, value=wert)
             zelle.border = _RAHMEN
-            zelle.alignment = Alignment(vertical="top", wrap_text=s in (2, 5, 14, 15))
-            if s in (6, 7):
+            zelle.alignment = Alignment(vertical="top", wrap_text=name in umbruch)
+            if name in mengen:
                 zelle.number_format = _MENGE_NULL
-            elif s in (9, 10, 11, 12):
+            elif name in fehl:
                 zelle.number_format = _MENGE
-                if wert and s in (9, 11):
+                if wert and name in ("Rückstand fehlt", "Fehlt ≤ {tage} Tage"):
                     zelle.font = Font(bold=True, color="9C0006")
-            elif s in (8, 13):
+            elif name in daten:
                 zelle.number_format = _DATUM
-        _stufe_stil(ws.cell(i, 2), werte["Stufe"])
+            elif name == "Reichweite (Wochen)":
+                zelle.number_format = "0.0"
+        _stufe_stil(ws.cell(i, _U_SPALTE["Dringlichkeit"]), werte["Stufe"])
         ws.cell(i, U_NOTIZ_DISPO).fill = _DISPO_FUELLUNG
         ws.cell(i, U_NOTIZ_PROD).fill = _PROD_FUELLUNG
-    letzte = max(ERSTE_ZEILE, ERSTE_ZEILE + len(a) - 1)
-    ws.freeze_panes = ws.cell(ERSTE_ZEILE, 4)
-    ws.auto_filter.ref = f"A{KOPFZEILE}:{get_column_letter(len(UEBERSICHT_SPALTEN))}{letzte}"
-    _druck(ws)
+    letzte = max(UEBERSICHT_ERSTE_ZEILE, UEBERSICHT_ERSTE_ZEILE + len(a) - 1)
+    if len(a):
+        for name, farbe in (("Unterwegs", "9DC3E6"), ("Rückstand fehlt", "FF8F8F"), ("Rückstand kommt später", "F4B183"),
+                            ("Fehlt ≤ {tage} Tage", "FFD966"), ("Fehlt später (bis {wochen} Wo.)", "9DC3E6")):
+            spalte = get_column_letter(_U_SPALTE[name])
+            ws.conditional_formatting.add(
+                f"{spalte}{UEBERSICHT_ERSTE_ZEILE}:{spalte}{letzte}",
+                DataBarRule(start_type="num", start_value=0, end_type="max", color=farbe, showValue=True),
+            )
+    ws.freeze_panes = "D1"   # nur die Spalten Nr./Dringlichkeit/Norm-Nr fixieren (Dashboard oben bleibt scrollbar)
+    ws.auto_filter.ref = f"A{UEBERSICHT_KOPFZEILE}:{get_column_letter(len(UEBERSICHT_SPALTEN))}{letzte}"
+    _druck(ws, UEBERSICHT_KOPFZEILE)
     return zeilen_je_artikel
 
+
+# --- Details je Artikel -------------------------------------------------------
 
 def _hinweis_zeile(z, sprache: str, reaktion_tage: int) -> str:
     t = TEXTE[sprache]
@@ -562,15 +936,92 @@ def _hinweis_zeile(z, sprache: str, reaktion_tage: int) -> str:
     return " · ".join(teile)
 
 
-def _schreibe_details(ws, bericht: dict, uebersicht_zeilen: dict, sprache: str) -> dict:
+def _schreibe_kennzahlen_panel(ws, zeile: int, werte: dict, kunden: pd.DataFrame, bericht: dict) -> None:
+    """Kennzahlen + Bedarf je Kunde rechts neben dem Prognose-Diagramm (Spalten I..K)."""
+    basis = bericht["basis"]
+    v = bericht["verlauf"].get(werte["Norm-Nr"], {})
+    erster = v.get("erster_fehltag")
+    if erster is None:
+        erster_text = "– (gedeckt / karşılandı)"
+    elif erster == "sofort":
+        erster_text = "sofort / hemen (Rückstand)"
+    else:
+        erster_text = f"{pd.Timestamp(erster):%d.%m.%Y}"
+    reichweite = werte["Reichweite Wochen"]
+    reichweite_text = "–" if reichweite is None or pd.isna(reichweite) else f"{_wochen_text(reichweite)} Wochen / hafta"
+    p = _PANEL_SPALTE
+    ueberschrift = ws.cell(zeile, p, value="Kennzahlen / Göstergeler")
+    ueberschrift.font = Font(bold=True, color="FFFFFF", size=10)
+    for s in range(p, p + 3):
+        ws.cell(zeile, s).fill = _KOPF_FUELLUNG
+    zeilen = [
+        ("Bestand bei uns / Bizdeki stok", werte["Bestand"], _MENGE_NULL, ""),
+        ("Unterwegs / Yolda", werte["Unterwegs"], _MENGE_NULL,
+         f"{werte['Anzahl NRI']} NRI, ab / ilk {_datum_kurz(werte['Nächste Ankunft'])}" if werte["Unterwegs"] > 0 else ""),
+        ("Fehlt gesamt / Toplam eksik", werte["Fehlt gesamt"], _MENGE_NULL, "aus der Türkei / Türkiye'den"),
+        ("Ø Bedarf je Woche / Haftalık ort. ihtiyaç", werte["Ø Woche"], _MENGE_NULL,
+         f"Basis {basis['von']:%d.%m.}–{basis['bis']:%d.%m.} ({_wochen_text(basis['wochen'])} Wo.)"),
+        ("Ø Bedarf je Monat / Aylık ort. ihtiyaç", werte["Ø Monat"], _MENGE_NULL, ""),
+        ("Reichweite Bestand + unterwegs / Yeterlilik", reichweite_text, None, ""),
+        ("Erster Fehltag / İlk eksik günü", erster_text, None, ""),
+    ]
+    for k, (label, wert, fmt, extra) in enumerate(zeilen, start=1):
+        r = zeile + k
+        ws.cell(r, p, value=label).font = Font(size=9, color="404040")
+        zelle = ws.cell(r, p + 1, value=wert)
+        zelle.font = Font(bold=True, size=10)
+        zelle.alignment = Alignment(horizontal="right")
+        if fmt:
+            zelle.number_format = fmt
+        ws.cell(r, p + 2, value=extra or None).font = Font(size=8, color="7F7F7F")
+        for s in range(p, p + 3):
+            ws.cell(r, s).fill = _PANEL_FUELLUNG
+    if label == "Erster Fehltag / İlk eksik günü" and erster is not None:
+        ws.cell(zeile + len(zeilen), p + 1).font = Font(bold=True, size=10, color="9C0006")
+    # Bedarf je Kunde
+    r = zeile + len(zeilen) + 2
+    for s, text in enumerate(("Bedarf je Kunde / Müşteri bazında", "Ø je Woche / Haftalık", "Ø je Monat / Aylık"), start=p):
+        zelle = ws.cell(r, s, value=text)
+        zelle.font = Font(bold=True, color="FFFFFF", size=9)
+        zelle.fill = _KOPF_FUELLUNG
+        zelle.alignment = Alignment(horizontal="left" if s == p else "right")
+    r += 1
+    if kunden is None or kunden.empty:
+        ws.cell(r, p, value="–")
+        return
+    sichtbar = kunden.head(MAX_KUNDEN_IM_BLOCK)
+    rest = kunden.iloc[MAX_KUNDEN_IM_BLOCK:]
+    for _, k in sichtbar.iterrows():
+        ws.cell(r, p, value=f"{k['Kunde']} ({k['Anteil']:.0%})").font = Font(size=9)
+        for s, wert in ((p + 1, k["Ø Woche"]), (p + 2, k["Ø Monat"])):
+            zelle = ws.cell(r, s, value=wert)
+            zelle.number_format = _MENGE_NULL
+            zelle.font = Font(size=9)
+        for s in range(p, p + 3):
+            ws.cell(r, s).fill = _PANEL_FUELLUNG
+            ws.cell(r, s).border = Border(bottom=_DUENN)
+        r += 1
+    if not rest.empty:
+        ws.cell(r, p, value=f"weitere {len(rest)} Kunden / diğer ({rest['Anteil'].sum():.0%})").font = Font(size=9, italic=True)
+        for s, wert in ((p + 1, rest["Ø Woche"].sum()), (p + 2, rest["Ø Monat"].sum())):
+            zelle = ws.cell(r, s, value=wert)
+            zelle.number_format = _MENGE_NULL
+            zelle.font = Font(size=9, italic=True)
+        for s in range(p, p + 3):
+            ws.cell(r, s).fill = _PANEL_FUELLUNG
+
+
+def _schreibe_details(ws, ws_daten, bericht: dict, uebersicht_zeilen: dict, sprache: str, daten_positionen: dict) -> dict:
     a, zeilen, unterwegs = bericht["artikel"], bericht["zeilen"], bericht["unterwegs"]
     rt, wo, st = bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
     t = TEXTE[sprache]
     _titel(ws, "Details je Artikel", "Parça bazında detay", st, [
-        f"Bereiche: Unterwegs (NRI) · Rückstand (bis {st:%d.%m.}) · nächste {rt} Tage · spätere Wochen mit "
-        f"Fehlmenge (bis {wo} Wochen). Vollständiger Wochenbedarf: Blatt „{BLATT_WOCHEN}“. Notizen bitte in der Übersicht.",
-        f"Bölümler: Yolda (NRI) · Gecikme ({st:%d.%m.} dahil) · sonraki {rt} gün · eksik olan sonraki haftalar "
-        f"({wo} haftaya kadar). Tüm haftalık ihtiyaç: „{BLATT_WOCHEN}“ sayfası. Notları lütfen özet sayfasına yazın.",
+        "Je Artikel: Bestandsprognose (grün = Bestand, rot = Fehlmenge, grau = Bedarf, blau = Zulauf/NRI), Kennzahlen, "
+        f"dann Unterwegs (NRI) · Rückstand (bis {st:%d.%m.}) · nächste {rt} Tage · spätere Wochen mit Fehlmenge "
+        f"(bis {wo} Wochen). Notizen bitte in der Übersicht.",
+        "Her parça için: stok tahmini (yeşil = stok, kırmızı = eksik, gri = ihtiyaç, mavi = gelecek/NRI), göstergeler, "
+        f"sonra Yolda (NRI) · Gecikme ({st:%d.%m.} dahil) · sonraki {rt} gün · eksik olan sonraki haftalar "
+        f"({wo} haftaya kadar). Notları lütfen özet sayfasına yazın.",
     ])
     _kopf(ws, DETAIL_SPALTEN, rt, wo)
     ws.column_dimensions[get_column_letter(DETAIL_NORM_SPALTE)].hidden = True
@@ -595,6 +1046,7 @@ def _schreibe_details(ws, bericht: dict, uebersicht_zeilen: dict, sprache: str) 
             _stufe_stil(ws.cell(zeile, s), stufe)
             ws.cell(zeile, s).border = Border(top=_DICK)
         ws.cell(zeile, 2).font = Font(bold=True, color=STUFEN[stufe]["font"], size=11)
+        ws.row_dimensions[zeile].height = 20
         u_zeile = uebersicht_zeilen.get(norm)
         if u_zeile:
             ws.cell(zeile, 1).hyperlink = Hyperlink(ref=ws.cell(zeile, 1).coordinate,
@@ -607,18 +1059,14 @@ def _schreibe_details(ws, bericht: dict, uebersicht_zeilen: dict, sprache: str) 
                 zelle.border = Border(top=_DICK)
         ws.cell(zeile, DETAIL_NORM_SPALTE, value=norm)
         zeile += 1
-        # Kennzahlen
-        ankunft = werte["Nächste Ankunft"]
-        kennzahlen = (
-            f"Bestand bei uns / Bizdeki stok: {_menge_text(werte['Bestand'])}  ·  "
-            f"Unterwegs / Yolda: {_menge_text(werte['Unterwegs'])}"
-            + (f" ({werte['Anzahl NRI']} NRI, ab / ilk {_datum_kurz(ankunft)})" if werte["Unterwegs"] > 0 else "")
-            + f"  ·  Fehlt gesamt / Toplam eksik: {_menge_text(werte['Fehlt gesamt'])}"
-            + (f"  ·  Kunden / Müşteriler: {werte['Kunden']}" if werte["Kunden"] else "")
-        )
-        ws.cell(zeile, 2, value=kennzahlen).font = Font(italic=True, size=9, color="404040")
-        ws.merge_cells(start_row=zeile, start_column=2, end_row=zeile, end_column=9)
-        zeile += 1
+        # Prognose-Diagramm (links, Spalten A..H) + Kennzahlen-Panel (rechts, I..K)
+        position = daten_positionen["artikel"].get(norm)
+        if position:
+            kopf, n = position
+            ws.add_chart(_bestandsdiagramm(ws_daten, kopf, n, f"Bestandsprognose / Stok tahmini – {norm}"),
+                         f"A{zeile}")
+        _schreibe_kennzahlen_panel(ws, zeile, werte, bericht["kunden"].get(norm), bericht)
+        zeile += DIAGRAMM_ZEILEN + 1
 
         def _zeile_schreiben(werte_zeile: list, grau: bool = False, fett_fehlt: bool = False):
             nonlocal zeile
@@ -671,6 +1119,8 @@ def _schreibe_details(ws, bericht: dict, uebersicht_zeilen: dict, sprache: str) 
     _druck(ws)
     return titel_zeilen
 
+
+# --- Wochen, Unterwegs, Archiv -------------------------------------------------
 
 def _schreibe_wochen(ws, bericht: dict) -> None:
     a, matrix, wochen_liste = bericht["artikel"], bericht["matrix"], bericht["wochen"]
@@ -761,7 +1211,8 @@ def _schreibe_unterwegs(ws, bericht: dict, sprache: str) -> None:
             ws.cell(zeile, 5).font = Font(color="9C0006")
         if norm in rang:
             zelle = ws.cell(zeile, 10)
-            zelle.hyperlink = Hyperlink(ref=zelle.coordinate, location=f"'{BLATT_UEBERSICHT}'!A{ERSTE_ZEILE + rang[norm] - 1}")
+            zelle.hyperlink = Hyperlink(ref=zelle.coordinate,
+                                        location=f"'{BLATT_UEBERSICHT}'!A{UEBERSICHT_ERSTE_ZEILE + rang[norm] - 1}")
             zelle.font = Font(color="0563C1", underline="single")
             zelle.alignment = Alignment(horizontal="center")
         zeile += 1
@@ -795,9 +1246,11 @@ def erstelle_bericht_datei(bericht: dict, notizen: dict | None = None, sprache: 
     ws_d = wb.create_sheet(BLATT_DETAILS)
     ws_w = wb.create_sheet(BLATT_WOCHEN)
     ws_n = wb.create_sheet(BLATT_UNTERWEGS)
+    ws_daten = wb.create_sheet(BLATT_DATEN)
 
-    uebersicht_zeilen = _schreibe_uebersicht(ws_u, bericht, notizen)
-    titel_zeilen = _schreibe_details(ws_d, bericht, uebersicht_zeilen, sprache)
+    daten_positionen = _schreibe_diagrammdaten(ws_daten, bericht, sprache)
+    uebersicht_zeilen = _schreibe_uebersicht(ws_u, ws_daten, bericht, notizen, daten_positionen)
+    titel_zeilen = _schreibe_details(ws_d, ws_daten, bericht, uebersicht_zeilen, sprache, daten_positionen)
     for norm, zeile in uebersicht_zeilen.items():
         ziel = titel_zeilen.get(norm)
         if ziel:
@@ -809,7 +1262,10 @@ def erstelle_bericht_datei(bericht: dict, notizen: dict | None = None, sprache: 
 
     archiv = {n: e for n, e in notizen.items() if n not in uebersicht_zeilen}
     if archiv:
-        _schreibe_archiv(wb.create_sheet(BLATT_ARCHIV), archiv, bericht["stichtag"])
+        ws_a = wb.create_sheet(BLATT_ARCHIV)
+        _schreibe_archiv(ws_a, archiv, bericht["stichtag"])
+        # Diagrammdaten (ausgeblendet) bleiben das letzte Blatt
+        wb.move_sheet(ws_daten, offset=1)
 
     puffer = io.BytesIO()
     wb.save(puffer)
@@ -822,12 +1278,14 @@ def dateiname(stichtag) -> str:
 
 def kennzahlen(bericht: dict) -> dict:
     a = bericht["artikel"]
-    zaehler = a["Stufe"].value_counts().to_dict() if not a.empty else {}
+    d = bericht["dashboard"]
     return {
         "artikel": len(a),
-        "je_stufe": {s: int(zaehler.get(s, 0)) for s in STUFEN},
-        "nri": int(bericht["alle_zugaenge"]["Referenz"].replace("", pd.NA).dropna().nunique())
-        if not bericht["alle_zugaenge"].empty else 0,
+        "je_stufe": {s: d["je_stufe"][s]["anzahl"] for s in STUFEN},
+        "menge_je_stufe": {s: d["je_stufe"][s]["menge"] for s in STUFEN},
+        "nri": d["nri"],
+        "nri_bericht": d["nri_bericht"],
+        "unterwegs_menge": d["unterwegs_menge"],
+        "fehlt_gesamt": d["fehlt_gesamt"],
         "letztes_ladedatum": bericht["zeilen"]["Ladedatum"].max() if not bericht["zeilen"].empty else pd.NaT,
     }
-
