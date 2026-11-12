@@ -132,24 +132,31 @@ Produktion in der Türkei schickt (`produktionsbericht.py`). Spaltenköpfe und
 Stufen stehen zweisprachig (DE/TR), die Hinweistexte wahlweise Türkisch oder
 Deutsch.
 
-- **Übersicht** – oben ein kleines Dashboard (Kacheln: Artikel je
-  Dringlichkeit mit Mengen, Unterwegs/NRI, Fehlt gesamt; Diagramme „Artikel je
-  Dringlichkeit“ und „Alle Artikel je Woche“), einklappbar über die
-  Gliederung. Darunter eine Zeile je Artikel, dringendste zuerst:
-  1 Rückstand fehlt → 2 Rückstand unterwegs → 3 Engpass in der Reaktionszeit
-  der Türkei (Standard 14 Tage) → 4 später (Standard bis 22 Wochen), mit
-  Ø Bedarf je Woche und Reichweite (Bestand + unterwegs in Wochen).
-  „Fehlt“ = weder bei uns noch unterwegs. Notizspalten für Dispo (blau) und
-  Produktion (orange).
-- **Details** – je Artikel ein Block: Bestandsprognose als Diagramm (wie die
-  verfügbare Menge in SAP MD04: grün = Bestand, rot = Fehlmenge unter null,
-  grau = Bedarf, blau = Zulauf/NRI), daneben Kennzahlen (Bestand, Unterwegs,
-  Fehlt, Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag) und Bedarf je
-  Kunde; dann Unterwegs (NRI, Ankunft), jede Einteilung im Rückstand und in
-  der Reaktionszeit mit „rechtzeitig gedeckt / kommt später / fehlt“ und
-  Hinweis (welche NRI, wie viele Tage zu spät, Transportart für pünktliche
-  Lieferung), danach spätere Wochen mit Fehlmenge. In der App zeigt ein Klick
-  auf eine Zeile der Vorschau dieselbe Prognose interaktiv.
+- **Übersicht** – schlank: oben sechs Kacheln (Fehlt gesamt, Artikel je
+  Dringlichkeit mit Stückzahlen, Unterwegs/NRI), darunter eine Zeile je
+  Artikel, dringendste zuerst: 1 Rückstand fehlt → 2 Rückstand unterwegs →
+  3 Engpass in der Reaktionszeit der Türkei (Standard 14 Tage) → 4 später
+  (Standard bis 22 Wochen). Nur Bestand, Unterwegs, Rückstand, Fehlmengen,
+  erster Engpass und die Notizspalten für Dispo (blau) und Produktion
+  (orange) – keine Bezeichnung, kein Ø. „Fehlt“ = weder bei uns noch
+  unterwegs. Klick auf die Norm-Nr → Detailkarte.
+- **Details** – je Artikel eine große Karte: Kennzahlen (Bestand, Unterwegs,
+  Fehlt, Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag), dann zwei
+  Diagramme:
+  ① Bestandsprognose – Ist (wie die verfügbare Menge in SAP MD04: grün =
+  Bestand, rot = Fehlmenge unter null, grau = Bedarf, blau = unterwegs/NRI),
+  daneben Bedarf je Kunde;
+  ② Vorschlag – dieselbe Prognose mit vorgeschlagenem Wareneingang (orange).
+  Datum und Menge stehen daneben in gelben Feldern, vorbelegt mit der
+  Fehlmenge zum Bedarfstermin (in 14-Tage-Fenstern gebündelt, Rückstand =
+  sofort, aufgerundet). Wer dort z. B. „4000“ zu einem Datum einträgt, sieht
+  Balken und Bestandskurve sofort neu – reine Excel-Formeln, kein Makro.
+  Darunter Summe, tiefster Stand, Bestand am Ende und erster Fehltag mit
+  Vorschlag. Danach die Termine: Unterwegs (NRI, Ankunft), jede Einteilung im
+  Rückstand und in der Reaktionszeit mit „rechtzeitig / kommt später / fehlt“
+  und Hinweis, spätere Wochen mit Fehlmenge. Druck: eine Karte je Seite. In
+  der App zeigt ein Klick auf eine Zeile der Vorschau dieselbe Karte, der
+  Wareneingang ist dort ebenfalls einstellbar.
 - **Wochen** – Bedarf / Zulauf / Fehlt je Kalenderwoche bis zum Vorschauende.
 - **Unterwegs** – alle Zugänge (ZMM1000) mit NRI.
 - **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen.
@@ -158,7 +165,8 @@ Deckung je Einteilung wie in `dispo_dashboard/logic.py` (Bestand, dann Zugänge
 nach Ankunft); „kommt später“ + „fehlt“ ergibt genau die Fehlmenge des
 Dashboards. Ø Bedarf = offene Mengen bis zum Horizont geteilt durch die
 Wochen, die der Bedarfsexport abdeckt (Basis steht im Bericht). Die Zahlen
-hinter den Diagrammen liegen im ausgeblendeten Blatt „Diagrammdaten“. Notizen: den zuletzt verschickten/zurückbekommenen Bericht
+und Formeln hinter den Diagrammen liegen im ausgeblendeten Blatt
+„Diagrammdaten“. Notizen: den zuletzt verschickten/zurückbekommenen Bericht
 hochladen, dann werden die Notizen je Artikel übernommen. Für die
 Wochenvorschau muss der Bedarfsexport aus SAP entsprechend weit reichen.
 

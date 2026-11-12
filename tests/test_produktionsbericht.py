@@ -173,7 +173,7 @@ def _uebersicht_zeilen(ws):
                   if ws.cell(r, pb.U_NORM).value is not None}
 
 
-def test_datei_blaetter_dashboard_und_reihenfolge(beispiel):
+def test_datei_blaetter_kacheln_und_schlanke_uebersicht(beispiel):
     _, _, bericht = beispiel
     _, wb = _excel(bericht)
     assert wb.sheetnames == [pb.BLATT_UEBERSICHT, pb.BLATT_DETAILS, pb.BLATT_WOCHEN, pb.BLATT_UNTERWEGS, pb.BLATT_DATEN]
@@ -184,49 +184,126 @@ def test_datei_blaetter_dashboard_und_reihenfolge(beispiel):
     kopfzeile = [str(ws.cell(kopf, s).value) for s in range(1, len(pb.UEBERSICHT_SPALTEN) + 1)]
     assert kopfzeile[pb.U_NOTIZ_DISPO - 1].startswith("Notiz Dispo\nDispo notu")
     assert kopfzeile[pb.U_NOTIZ_PROD - 1].startswith("Notiz Produktion\nÜretim notu")
-    assert "Ø Bedarf je Woche" in kopfzeile[8] and "Reichweite" in kopfzeile[9]
+    # schlank: keine Bezeichnung, kein Ø-Bedarf / keine Reichweite (stehen in der Detailkarte)
+    assert not any(k.startswith(("Bezeichnung", "Ø", "Reichweite")) for k in kopfzeile)
     assert list(zeilen) == [B, A, C]
     assert ws.cell(zeilen[B], 2).value.startswith("Rückstand – fehlt\nGecikme – eksik")
-    # Link von der Norm-Nr zum Detailblock
+    assert ws.cell(zeilen[A], 8).value == 50                      # Rueckstand unterwegs
+    # Link von der Norm-Nr zur Detailkarte
     assert ws.cell(zeilen[B], pb.U_NORM).hyperlink.location.startswith(f"'{pb.BLATT_DETAILS}'!A")
-    # Dashboard: Kacheln + zwei Diagramme, Zeilen einklappbar
-    assert ws.cell(5, 1).value.startswith("Artikel im Bericht") and ws.cell(6, 1).value == 3
-    assert ws.cell(6, 4).value == 1 and ws.cell(7, 4).value.startswith("80 Stück")   # Rueckstand - fehlt
-    assert len(ws._charts) == 2
-    assert ws.row_dimensions[pb.DASHBOARD_ZEILEN[0]].outlineLevel == 1
-    assert ws.freeze_panes == "D1"
+    # Kacheln: Fehlt gesamt, dann Artikel je Stufe (mit Stueck), Unterwegs
+    assert str(ws.cell(4, 1).value).startswith("Fehlt gesamt") and ws.cell(5, 1).value == 340
+    assert ws.cell(5, 3).value == 1 and ws.cell(6, 3).value.startswith("80 Stück")   # Rueckstand - fehlt
+    assert ws.cell(5, 5).value == 1 and ws.cell(5, 7).value == 1 and ws.cell(5, 9).value == 0
+    assert ws.cell(5, 11).value == 2 and ws.cell(6, 11).value.startswith("150 Stück")  # NRI
+    assert len(ws._charts) == 0                                   # Diagramme nur in den Detailkarten
+    assert ws.freeze_panes == f"D{pb.UEBERSICHT_ERSTE_ZEILE}"
+    assert ws.sheet_view.showGridLines is False
 
 
-def test_details_mit_prognose_diagramm_kennzahlen_und_hinweisen(beispiel):
+def _karten(ws):
+    """Norm-Nr -> Titelzeile der Detailkarte (Norm-Nr steht versteckt in der Notizzeile darunter)."""
+    return {ws.cell(r, pb.DETAIL_NORM_SPALTE).value: r - 1 for r in range(pb.ERSTE_ZEILE, ws.max_row + 1)
+            if ws.cell(r, pb.DETAIL_NORM_SPALTE).value}
+
+
+def test_detailkarte_kennzahlen_kunden_zwei_diagramme_und_termine(beispiel):
     _, _, bericht = beispiel
     _, wb = _excel(bericht, {A: {"dispo": "Kunde akzeptiert 20.11.", "produktion": ""}}, "DE")
     ws = wb[pb.BLATT_DETAILS]
-    titel = {ws.cell(r, pb.DETAIL_NORM_SPALTE).value: r for r in range(pb.ERSTE_ZEILE, ws.max_row + 1)
-             if ws.cell(r, pb.DETAIL_NORM_SPALTE).value}
+    titel = _karten(ws)
     assert list(titel) == [B, A, C]
-    assert len(ws._charts) == 3                      # ein Prognose-Diagramm je Artikel
-    anker = sorted(c.anchor._from.row + 1 for c in ws._charts)
-    assert anker == [titel[B] + 1, titel[A] + 1, titel[C] + 1]
-    spiegel = ws.cell(titel[A], pb.DETAIL_NOTIZ_DISPO).value
+    t = titel[A]
+    assert str(ws.cell(t, 2).value).startswith("2.  900000001")
+    assert ws.cell(t, 14).hyperlink.location.startswith(f"'{pb.BLATT_UEBERSICHT}'!A")
+    spiegel = ws.cell(t + 1, pb.DETAIL_NOTIZ_DISPO).value
     assert spiegel.startswith("=IF(") and pb.BLATT_UEBERSICHT in spiegel
-    # Kennzahlen-Panel rechts neben dem Diagramm
-    panel = {str(ws.cell(r, pb._PANEL_SPALTE).value): ws.cell(r, pb._PANEL_SPALTE + 1).value
-             for r in range(titel[A] + 1, titel[A] + 1 + pb.DIAGRAMM_ZEILEN)}
-    assert panel["Bestand bei uns / Bizdeki stok"] == 100
-    assert panel["Unterwegs / Yolda"] == 150
-    assert panel["Fehlt gesamt / Toplam eksik"] == 200
-    assert panel["Ø Bedarf je Woche / Haftalık ort. ihtiyaç"] == pytest.approx(450 / (46 / 7))
-    assert panel["Erster Fehltag / İlk eksik günü"] == "sofort / hemen (Rückstand)"
-    assert any(str(k).startswith("DEMO Kunde Nord (56%)") for k in panel)
-    # Detailzeilen folgen unter dem Diagramm
-    texte = [str(ws.cell(r, 9).value or "") for r in range(titel[A] + pb.DIAGRAMM_ZEILEN, titel[C])]
-    assert any("NRI-DEMO-1" in t and "7 T. zu spät" in t for t in texte)
-    assert any(t.startswith("fehlt 80 – überfällig") for t in
-               (str(ws.cell(r, 9).value or "") for r in range(titel[B], titel[A])))
+    # zwei Diagramme je Artikel: Ist-Prognose und Vorschlag
+    assert len(ws._charts) == 6
+    anker = sorted(c.anchor._from.row + 1 for c in ws._charts)
+    erwartet = sorted(z for n in titel.values() for z in (n + 8, n + 9 + pb.DIAGRAMM_ZEILEN))
+    assert anker == erwartet
+    # Kennzahlen-Kacheln (Werte in der zweiten Kachelzeile, je zwei Spalten breit)
+    kacheln = {str(ws.cell(t + 3, s).value).split(" / ")[0]: ws.cell(t + 4, s).value for s in range(2, 16, 2)}
+    assert kacheln["Bestand bei uns"] == 100
+    assert kacheln["Unterwegs (NRI)"] == 150
+    assert kacheln["Fehlt gesamt"] == 200
+    assert kacheln["Ø Bedarf je Woche"] == pytest.approx(450 / (46 / 7))
+    assert kacheln["Ø Bedarf je Monat"] == pytest.approx(450 / (46 / 7) * 52 / 12)
+    assert kacheln["Erster Fehltag"] == "sofort / hemen"
+    # Bedarf je Kunde rechts neben dem Ist-Diagramm
+    kunden = {ws.cell(r, pb._D_PANEL).value: ws.cell(r, 13).value for r in range(t + 9, t + 9 + 8)}
+    assert kunden["DEMO Kunde Nord"] == pytest.approx(250 / 450)
+    # Termine unter den Diagrammen, Hinweise in der breiten Hinweisspalte
+    texte = [str(ws.cell(r, pb.DETAIL_HINWEIS_SPALTE).value or "") for r in range(t, titel[C])]
+    assert any("NRI-DEMO-1" in x and "7 T. zu spät" in x for x in texte)
+    assert any(str(ws.cell(r, pb.DETAIL_HINWEIS_SPALTE).value or "").startswith("fehlt 80 – überfällig")
+               for r in range(titel[B], titel[A]))
     # Diagrammdaten: Achsenpunkte in der gewaehlten Sprache
     wd = wb[pb.BLATT_DATEN]
     werte_a = [wd.cell(r, 1).value for r in range(1, wd.max_row + 1)]
     assert "Bestand" in werte_a and "Rückst." in werte_a
+    # Druck: jede Karte auf einer eigenen Seite
+    assert sorted(b.id for b in ws.row_breaks.brk) == [titel[A] - 1, titel[C] - 1]
+
+
+def test_vorschlag_eingabefelder_und_formeln(beispiel):
+    _, _, bericht = beispiel
+    _, wb = _excel(bericht)
+    ws = wb[pb.BLATT_DETAILS]
+    titel = _karten(ws)
+    erste = {n: t + 8 + pb.DIAGRAMM_ZEILEN + 2 for n, t in titel.items()}   # erste gelbe Eingabezeile
+    for norm, datum, menge in ((A, ST + pd.Timedelta(days=40), 200), (B, ST, 80), (C, ST + pd.Timedelta(days=5), 60)):
+        assert ws.cell(erste[norm] - 1, pb._EINGABE_DATUM).value == "Datum / Tarih"
+        assert pd.Timestamp(ws.cell(erste[norm], pb._EINGABE_DATUM).value) == datum
+        assert ws.cell(erste[norm], pb._EINGABE_MENGE).value == menge
+        assert ws.cell(erste[norm] + 1, pb._EINGABE_MENGE).value is None      # weitere Zeilen frei
+    assert "sofort" in ws.cell(erste[B], 13).value
+    # Ergebnis-Formeln unter den Eingaben rechnen live mit
+    summe = ws.cell(erste[A] + pb.MAX_VORSCHLAEGE, pb._EINGABE_MENGE).value
+    assert summe == f"=SUM(L{erste[A]}:L{erste[A] + pb.MAX_VORSCHLAEGE - 1})"
+    assert "MIN(" in ws.cell(erste[A] + pb.MAX_VORSCHLAEGE + 1, pb._EINGABE_MENGE).value
+    # Diagrammdaten: Zugang je Tag = SUMIFS ueber die gelben Felder, Bestand laufend
+    wd = wb[pb.BLATT_DATEN]
+    kopf = next(r for r in range(1, wd.max_row + 1) if wd.cell(r, 1).value == f"Artikel {A}") + 1
+    bereich = f"'{pb.BLATT_DETAILS}'!$L${erste[A]}:$L${erste[A] + pb.MAX_VORSCHLAEGE - 1}"
+    assert wd.cell(kopf + 1, 8).value == 100                         # Start = Bestand heute
+    assert wd.cell(kopf + 2, 7).value.startswith(f"=SUMIFS({bereich},") and '"<"&(F' in wd.cell(kopf + 2, 7).value
+    assert '">="&F' in wd.cell(kopf + 3, 7).value
+    assert wd.cell(kopf + 3, 8).value == f"=H{kopf + 2}+C{kopf + 3}+G{kopf + 3}-B{kopf + 3}"
+    assert wb.calculation.fullCalcOnLoad
+
+
+def test_vorschlag_deckt_fehlmenge_zum_bedarfstermin(beispiel):
+    _, _, bericht = beispiel
+    v = bericht["vorschlag"]
+    assert [(x["Datum"], x["Menge"], x["Sofort"]) for x in v[A]] == [(ST + pd.Timedelta(days=40), 200, False)]
+    assert [(x["Datum"], x["Menge"], x["Sofort"]) for x in v[B]] == [(ST, 80, True)]   # Rueckstand -> sofort
+    assert [(x["Datum"], x["Menge"]) for x in v[C]] == [(ST + pd.Timedelta(days=5), 60)]
+    # A: Vorschlag deckt die Fehlmenge; die Delle davor bleibt (Ware unterwegs, kommt zu spaet)
+    mit = pb.verlauf_mit_vorschlag(bericht["verlauf"][A], [(x["Datum"], x["Menge"]) for x in v[A]], ST)
+    assert mit["ende"] == 0 and mit["tiefster"] == -100 and mit["erster_fehltag"] == "sofort"
+    assert sum(mit["vorschlag"]) == 200
+    # Eingabe vor dem Stichtag zaehlt zum Rueckstand, nach dem Horizont faellt sie weg
+    mit = pb.verlauf_mit_vorschlag(bericht["verlauf"][B], [(ST - pd.Timedelta(days=3), 80),
+                                                           (ST + pd.Timedelta(days=400), 999), (pd.NaT, 5)], ST)
+    assert mit["bestand"][1] == 0 and mit["erster_fehltag"] is None and sum(mit["vorschlag"]) == 80
+
+
+def test_vorschlag_buendelt_in_fenstern_und_rundet():
+    zeilen = pd.DataFrame({
+        "Ladedatum": [ST - pd.Timedelta(days=2)] + [ST + pd.Timedelta(days=7 * k) for k in range(1, 20)],
+        "Fehlt": [87.0] + [1234.0] * 19,
+    })
+    v = pb.vorschlag_zugaenge(zeilen, ST)
+    assert len(v) == pb.MAX_VORSCHLAEGE
+    assert v[0]["Datum"] == ST and v[0]["Sofort"] and v[0]["Bedarf bis"] == ST + pd.Timedelta(days=7)
+    assert v[0]["Fehlt"] == 87 + 1234 and v[0]["Menge"] == 1400                  # ab 1.000 auf 100 aufrunden
+    assert v[1]["Datum"] == ST + pd.Timedelta(days=14) and v[1]["Fehlt"] == 2 * 1234
+    assert v[-1]["Bedarf bis"] == ST + pd.Timedelta(days=7 * 19)                 # letzte Zeile nimmt den Rest
+    assert sum(x["Fehlt"] for x in v) == 87 + 19 * 1234
+    assert pb.vorschlag_zugaenge(pd.DataFrame({"Ladedatum": [ST], "Fehlt": [87.0]}), ST)[0]["Menge"] == 90
+    assert pb.vorschlag_zugaenge(zeilen.assign(Fehlt=0.0), ST) == []
 
 
 def test_notizen_roundtrip_mit_archiv_und_in_details_getippt(beispiel):

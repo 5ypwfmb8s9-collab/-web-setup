@@ -1058,21 +1058,22 @@ def _render_positionsliste_alt(positionen: pd.DataFrame) -> None:
 
 _BERICHT_VORSCHAU_SPALTEN = {
     "Rang": "Nr.", "Stufe_Text": "Dringlichkeit", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr",
-    "Kurztext": "Bezeichnung", "Bestand": "Bestand bei uns", "Unterwegs": "Unterwegs",
-    "Ø Woche": "Ø Bedarf/Woche", "Reichweite Wochen": "Reichweite (Wo.)",
-    "Rückstand fehlt": "Rückstand fehlt", "Rückstand später": "Rückstand kommt später",
+    "Bestand": "Bestand bei uns", "Unterwegs": "Unterwegs (NRI)",
+    "Rückstand fehlt": "Rückstand fehlt", "Rückstand später": "Rückstand unterwegs",
     "Kurz fehlt": "Fehlt (Reaktionszeit)", "Später fehlt": "Fehlt später",
     "Erster Engpass": "Erster Engpass",
 }
 
 
-def _prognose_diagramm(verlauf: dict, stichtag: pd.Timestamp, norm_nr) -> alt.LayerChart:
+def _prognose_diagramm(verlauf: dict, stichtag: pd.Timestamp, titel: str, hoehe: int = 260) -> alt.LayerChart:
     """Bestandsprognose wie im Excel-Bericht: Flaeche = Bestand (gruen) bzw.
-    Fehlmenge (rot, unter null), Balken = Bedarf (grau) und Zulauf (blau).
-    Die ersten zwei Punkte (Bestand heute, nach Abzug des Rueckstands) liegen
-    auf den zwei Tagen vor dem Stichtag."""
+    Fehlmenge (rot, unter null), Balken = Bedarf (grau), Unterwegs/NRI (blau)
+    und - falls verlauf["vorschlag"] da ist - vorgeschlagener Wareneingang
+    (orange). Die ersten zwei Punkte (Bestand heute, nach Abzug des
+    Rueckstands) liegen auf den zwei Tagen vor dem Stichtag."""
     st_ = pd.Timestamp(stichtag)
     tage = [st_ - pd.Timedelta(days=2), st_ - pd.Timedelta(days=1)] + list(verlauf["tage"][2:])
+    vorschlag = verlauf.get("vorschlag")
     df = pd.DataFrame({
         "Datum": pd.to_datetime(tage),
         "Zeitpunkt": ["Bestand heute", f"nach Rückstand (bis {st_:%d.%m.})"] + list(verlauf["labels"][2:]),
@@ -1080,30 +1081,117 @@ def _prognose_diagramm(verlauf: dict, stichtag: pd.Timestamp, norm_nr) -> alt.La
         "Bestand (≥ 0)": verlauf["bestand_plus"],
         "Fehlmenge (< 0)": verlauf["fehl_minus"],
         "Bedarf": verlauf["bedarf"],
-        "Zulauf": verlauf["zulauf"],
+        "Unterwegs (NRI)": verlauf["zulauf"],
+        "Vorschlag": vorschlag if vorschlag is not None else [0.0] * len(tage),
     })
-    basis = alt.Chart(df).encode(x=alt.X("Datum:T", title=None, axis=alt.Axis(format="%d.%m.")))
+    basis = alt.Chart(df).encode(x=alt.X("Datum:T", title=None, axis=alt.Axis(format="%d.%m.", grid=False)))
     tooltip = [
         alt.Tooltip("Zeitpunkt:N", title="Zeitpunkt"),
         alt.Tooltip("Bestand:Q", title="Bestand (Prognose)", format=",.0f"),
         alt.Tooltip("Bedarf:Q", title="Bedarf", format=",.0f"),
-        alt.Tooltip("Zulauf:Q", title="Zulauf", format=",.0f"),
+        alt.Tooltip("Unterwegs (NRI):Q", title="Unterwegs (NRI)", format=",.0f"),
     ]
-    flaeche_plus = basis.mark_area(color="#22c55e", opacity=0.35, line={"color": "#15803d"}).encode(
+    if vorschlag is not None:
+        tooltip.append(alt.Tooltip("Vorschlag:Q", title="Vorschlag", format=",.0f"))
+    flaeche_plus = basis.mark_area(color="#10b981", opacity=0.25, line={"color": "#10b981"}).encode(
         y=alt.Y("Bestand (≥ 0):Q", title="Stück"), tooltip=tooltip)
-    flaeche_minus = basis.mark_area(color="#ef4444", opacity=0.45, line={"color": "#b91c1c"}).encode(
+    flaeche_minus = basis.mark_area(color="#ef4444", opacity=0.3, line={"color": "#ef4444"}).encode(
         y="Fehlmenge (< 0):Q", tooltip=tooltip)
-    balken = df.melt(id_vars=["Datum", "Zeitpunkt"], value_vars=["Bedarf", "Zulauf"], var_name="Art", value_name="Menge")
+    arten = ["Bedarf", "Unterwegs (NRI)"] + (["Vorschlag"] if vorschlag is not None else [])
+    farben = ["#94a3b8", "#3b82f6", "#f59e0b"][:len(arten)]
+    balken = df.melt(id_vars=["Datum", "Zeitpunkt"], value_vars=arten, var_name="Art", value_name="Menge")
     balken = balken[balken["Menge"] > 0]
-    saeulen = alt.Chart(balken).mark_bar(size=3).encode(
-        x="Datum:T", y=alt.Y("Menge:Q"), xOffset="Art:N",
-        color=alt.Color("Art:N", scale=alt.Scale(domain=["Bedarf", "Zulauf"], range=["#9ca3af", "#3b82f6"]),
+    saeulen = alt.Chart(balken).mark_bar(size=4).encode(
+        x="Datum:T", y=alt.Y("Menge:Q"),
+        color=alt.Color("Art:N", scale=alt.Scale(domain=arten, range=farben),
                         legend=alt.Legend(title=None, orient="bottom")),
         tooltip=[alt.Tooltip("Zeitpunkt:N"), alt.Tooltip("Art:N"), alt.Tooltip("Menge:Q", format=",.0f")],
     )
     return alt.layer(flaeche_plus, flaeche_minus, saeulen).properties(
-        height=280, title=f"Bestandsprognose {norm_nr}"
-    ).interactive(bind_y=False)
+        height=hoehe, title=titel
+    ).configure_view(strokeWidth=0).interactive(bind_y=False)
+
+
+def _fehltag_text(erster) -> str:
+    if erster is None:
+        return "keiner"
+    return "sofort" if erster == "sofort" else f"{pd.Timestamp(erster):%d.%m.%Y}"
+
+
+def _render_artikel_karte(bericht: dict, gewaehlt: pd.Series, reaktion: int, wochen: int) -> None:
+    """Detailkarte zum angeklickten Artikel: Kennzahlen, Ist-Prognose, Bedarf je
+    Kunde und Vorschlag mit einstellbarem Wareneingang (rechnet live)."""
+    norm_nr = gewaehlt["Norm-Nr"]
+    verlauf = bericht["verlauf"].get(norm_nr)
+    if not verlauf:
+        return
+    basis, stichtag = bericht["basis"], bericht["stichtag"]
+    stufe = produktionsbericht.STUFEN[int(gewaehlt["Stufe"])]
+    st.markdown(
+        f"### {gewaehlt['Rang']}. {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}"
+        f"  <span style='background:#{stufe['fill']};color:#{stufe['font']};padding:2px 10px;border-radius:10px;"
+        f"font-size:0.8rem;font-weight:600'>{stufe['de'].format(tage=reaktion, wochen=wochen)}</span>",
+        unsafe_allow_html=True,
+    )
+    if gewaehlt["Kurztext"]:
+        st.caption(gewaehlt["Kurztext"])
+    reichweite = gewaehlt["Reichweite Wochen"]
+    k = st.columns(7)
+    k[0].metric("Bestand bei uns", _fmt_menge(gewaehlt["Bestand"]))
+    k[1].metric("Unterwegs (NRI)", _fmt_menge(gewaehlt["Unterwegs"]), f"{gewaehlt['Anzahl NRI']} NRI", delta_color="off")
+    k[2].metric("Fehlt gesamt", _fmt_menge(gewaehlt["Fehlt gesamt"]))
+    k[3].metric("Ø Bedarf / Woche", _fmt_menge(gewaehlt["Ø Woche"]))
+    k[4].metric("Ø Bedarf / Monat", _fmt_menge(gewaehlt["Ø Monat"]))
+    k[5].metric("Reichweite", "–" if reichweite is None or pd.isna(reichweite)
+                else f"{reichweite:.1f} Wo.".replace(".", ",", 1))
+    k[6].metric("Erster Fehltag", _fehltag_text(verlauf["erster_fehltag"]))
+    basis_wochen = f"{basis['wochen']:.1f}".replace(".", ",")
+    st.caption(f"Ø-Bedarf aus {basis['von']:%d.%m.}–{basis['bis']:%d.%m.} ({basis_wochen} Wochen) · "
+               "Reichweite = (Bestand + unterwegs) / Ø Woche")
+
+    links, rechts = st.columns([3, 1])
+    with links:
+        st.altair_chart(_prognose_diagramm(verlauf, stichtag, "① Bestandsprognose – Ist"), use_container_width=True)
+    with rechts:
+        st.markdown("**Bedarf je Kunde**")
+        kunden = bericht["kunden"].get(norm_nr)
+        if kunden is not None and not kunden.empty:
+            tabelle = kunden[["Kunde", "Anteil", "Ø Woche", "Ø Monat"]].copy()
+            tabelle["Anteil"] = tabelle["Anteil"].apply(lambda a: f"{a:.0%}")
+            for s in ("Ø Woche", "Ø Monat"):
+                tabelle[s] = tabelle[s].apply(_fmt_menge)
+            st.dataframe(tabelle, hide_index=True, use_container_width=True, height=_tabellenhoehe(len(tabelle)))
+
+    vorschlaege = bericht["vorschlag"].get(norm_nr, [])
+    zeilen = produktionsbericht.MAX_VORSCHLAEGE
+    eingabe = pd.DataFrame({
+        "Datum": pd.to_datetime([v["Datum"] for v in vorschlaege] + [pd.NaT] * (zeilen - len(vorschlaege))),
+        "Menge": [v["Menge"] for v in vorschlaege] + [None] * (zeilen - len(vorschlaege)),
+    })
+    links, rechts = st.columns([3, 1])
+    with rechts:
+        st.markdown("**Wareneingang planen**")
+        st.caption("Vorschlag = Fehlmenge (weder bei uns noch unterwegs) zum Bedarfstermin. "
+                   "Datum oder Menge ändern → Diagramm rechnet sofort neu. Rot trotz Vorschlag = "
+                   "Ware ist unterwegs, kommt aber zu spät.")
+        bearbeitet = st.data_editor(
+            eingabe, key=f"bericht_vorschlag_{norm_nr}", hide_index=True, num_rows="fixed",
+            use_container_width=True,
+            column_config={
+                "Datum": st.column_config.DateColumn("Datum", format="DD.MM.YYYY"),
+                "Menge": st.column_config.NumberColumn("Menge", min_value=0, step=100, format="%d"),
+            },
+        )
+        mit = produktionsbericht.verlauf_mit_vorschlag(
+            verlauf, zip(bearbeitet["Datum"], bearbeitet["Menge"]), stichtag)
+        summe = pd.to_numeric(bearbeitet["Menge"], errors="coerce").fillna(0).sum()
+        st.markdown(
+            f"Summe Vorschlag: **{_fmt_menge(summe)}**  \n"
+            f"Tiefster Stand: **{_fmt_menge(mit['tiefster'])}** · Bestand Ende: **{_fmt_menge(mit['ende'])}**  \n"
+            f"Erster Fehltag: **{_fehltag_text(mit['erster_fehltag'])}**"
+        )
+    with links:
+        st.altair_chart(_prognose_diagramm(mit, stichtag, "② Vorschlag – mit Wareneingang"), use_container_width=True)
 
 
 def _render_bericht_vorschau(bericht: dict, reaktion: int, wochen: int) -> None:
@@ -1114,13 +1202,12 @@ def _render_bericht_vorschau(bericht: dict, reaktion: int, wochen: int) -> None:
     )
     vorschau = vorschau[list(_BERICHT_VORSCHAU_SPALTEN)].rename(columns=_BERICHT_VORSCHAU_SPALTEN)
     anzeige = vorschau.copy()
-    for s in ("Bestand bei uns", "Unterwegs", "Ø Bedarf/Woche", "Rückstand fehlt", "Rückstand kommt später",
+    for s in ("Bestand bei uns", "Unterwegs (NRI)", "Rückstand fehlt", "Rückstand unterwegs",
               "Fehlt (Reaktionszeit)", "Fehlt später"):
-        anzeige[s] = anzeige[s].apply(_fmt_menge)
-    anzeige["Reichweite (Wo.)"] = anzeige["Reichweite (Wo.)"].apply(
-        lambda w: "–" if w is None or pd.isna(w) else f"{w:.1f}".replace(".", ","))
+        anzeige[s] = anzeige[s].apply(lambda w: "" if not w else _fmt_menge(w))
     anzeige["Erster Engpass"] = anzeige["Erster Engpass"].apply(_fmt_datum)
-    st.caption("Zeile anklicken → Bestandsprognose und Bedarf je Kunde wie im Excel-Bericht.")
+    st.caption("Artikel anklicken → Detailkarte mit Prognose, Ø-Bedarf und einstellbarem Wareneingang "
+               "(wie in der Excel-Datei).")
     auswahl = st.dataframe(
         anzeige, hide_index=True, use_container_width=True,
         on_select="rerun", selection_mode="single-row",
@@ -1129,38 +1216,9 @@ def _render_bericht_vorschau(bericht: dict, reaktion: int, wochen: int) -> None:
         key="bericht_vorschau_tabelle",
     )
     zeilen = auswahl.selection.rows if auswahl else []
-    if not zeilen:
-        return
-    gewaehlt = artikel.iloc[zeilen[0]]
-    norm_nr = gewaehlt["Norm-Nr"]
-    verlauf = bericht["verlauf"].get(norm_nr)
-    if not verlauf:
-        return
-    basis = bericht["basis"]
-    links, rechts = st.columns([3, 2])
-    with links:
-        st.altair_chart(_prognose_diagramm(verlauf, bericht["stichtag"], _artikel_label(norm_nr, gewaehlt["VW-Nr"])),
-                        use_container_width=True)
-    with rechts:
-        reichweite = gewaehlt["Reichweite Wochen"]
-        erster = verlauf["erster_fehltag"]
-        st.markdown(
-            f"**Bestand bei uns:** {_fmt_menge(gewaehlt['Bestand'])} · **Unterwegs:** {_fmt_menge(gewaehlt['Unterwegs'])}"
-            f" ({gewaehlt['Anzahl NRI']} NRI) · **Fehlt gesamt:** {_fmt_menge(gewaehlt['Fehlt gesamt'])}  \n"
-            f"**Ø Bedarf je Woche:** {_fmt_menge(gewaehlt['Ø Woche'])} · **je Monat:** {_fmt_menge(gewaehlt['Ø Monat'])}"
-            f" (Basis {basis['von']:%d.%m.}–{basis['bis']:%d.%m.}, {basis['wochen']:.1f} Wochen)  \n"
-            f"**Reichweite (Bestand + unterwegs):** "
-            + ("–" if reichweite is None or pd.isna(reichweite) else f"{reichweite:.1f} Wochen".replace(".", ","))
-            + "  \n**Erster Fehltag:** "
-            + ("– (gedeckt)" if erster is None else ("sofort (Rückstand)" if erster == "sofort" else f"{pd.Timestamp(erster):%d.%m.%Y}"))
-        )
-        kunden = bericht["kunden"].get(norm_nr)
-        if kunden is not None and not kunden.empty:
-            tabelle = kunden.copy()
-            tabelle["Anteil"] = tabelle["Anteil"].apply(lambda a: f"{a:.0%}")
-            for s in ("Bedarf", "Ø Woche", "Ø Monat"):
-                tabelle[s] = tabelle[s].apply(_fmt_menge)
-            st.dataframe(tabelle, hide_index=True, use_container_width=True, height=_tabellenhoehe(len(tabelle)))
+    if zeilen:
+        st.divider()
+        _render_artikel_karte(bericht, artikel.iloc[zeilen[0]], reaktion, wochen)
 
 
 def _render_export_tab(daten: dict) -> None:
@@ -1168,15 +1226,14 @@ def _render_export_tab(daten: dict) -> None:
     stichtag = pd.Timestamp(daten["stichtag"])
     st.markdown("#### Bericht für die Produktion (Türkei)")
     st.caption(
-        "Excel-Datei zum Verschicken an die Produktion: oben ein Dashboard (kritische Artikel, "
-        "Fehlmengen, Unterwegs), darunter je Artikel, was im Rückstand fehlt, was schon unterwegs "
-        "ist (NRI) und was in den nächsten Tagen und Wochen gebraucht wird – dringendste Artikel "
-        "zuerst. Je Artikel eine Bestandsprognose als Diagramm (Bestand fällt mit dem Bedarf, "
-        "steigt mit jedem Zugang; unter null = Fehlmenge) plus Ø-Bedarf je Woche/Monat, auch je "
-        "Kunde. „Fehlt“ = weder bei uns noch unterwegs, muss also aus der Türkei kommen. "
-        "Spaltenköpfe stehen auf Deutsch und Türkisch. Dispo und Produktion schreiben ihre "
-        "Notizen in die Übersicht; lädst du den letzten Bericht (mit Notizen) unten hoch, werden "
-        "sie in den neuen Bericht übernommen."
+        "Excel-Datei zum Verschicken an die Produktion. Übersicht: sechs Kacheln und eine Zeile je "
+        "Artikel (dringendste zuerst) mit Rückstand, Fehlmengen, Unterwegs und Notizen. Klick auf "
+        "die Norm-Nr öffnet die Detailkarte: Kennzahlen (Ø-Bedarf je Woche/Monat, Reichweite, je "
+        "Kunde), ① Bestandsprognose und ② Vorschlag mit vorgeschlagenem Wareneingang – Datum und "
+        "Menge stehen in gelben Feldern und sind änderbar, das Diagramm rechnet sofort neu. "
+        "„Fehlt“ = weder bei uns noch unterwegs, muss also aus der Türkei kommen. Spaltenköpfe "
+        "Deutsch/Türkisch. Notizen in die Übersicht schreiben; lädst du den letzten Bericht unten "
+        "hoch, werden sie übernommen."
     )
     c1, c2, c3 = st.columns(3)
     reaktion = int(c1.number_input(
@@ -1249,22 +1306,20 @@ def _render_export_tab(daten: dict) -> None:
         _render_bericht_vorschau(bericht, reaktion, wochen)
     with st.expander("So ist die Datei aufgebaut"):
         st.markdown(
-            "- **Übersicht** – oben das Dashboard: Kacheln (Artikel je Dringlichkeit mit Mengen, "
-            "Unterwegs, Fehlt gesamt), Diagramm „Artikel je Dringlichkeit“ und „Alle Artikel je "
-            "Woche“ (Bedarf / Zulauf / Fehlt). Das Dashboard lässt sich über die Gliederung links "
-            "einklappen. Darunter eine Zeile je Artikel, dringendste zuerst: 1 Rückstand fehlt → "
-            "2 Rückstand unterwegs (Ware kommt, aber zu spät) → 3 Engpass in der Reaktionszeit → "
-            "4 später; mit Ø Bedarf je Woche und Reichweite (Bestand + unterwegs in Wochen). "
-            "Blaue Spalte = Notiz Dispo, orange = Notiz Produktion. Klick auf die Norm-Nr "
-            "springt zum Detailblock.\n"
-            "- **Details** – je Artikel ein Block: Bestandsprognose als Diagramm (grün = Bestand, "
-            "rot = Fehlmenge unter null, grau = Bedarf, blau = Zulauf/NRI – wie die verfügbare "
-            "Menge in SAP MD04), daneben Kennzahlen (Bestand, Unterwegs, Fehlt, Ø Bedarf je "
-            "Woche/Monat, Reichweite, erster Fehltag) und der Bedarf je Kunde. Dann was unterwegs "
-            "ist (NRI, Ankunft, Menge), jede Einteilung im Rückstand und in der Reaktionszeit mit "
-            "„rechtzeitig gedeckt / kommt später / fehlt“ und Hinweis (welche NRI deckt, wie viele "
-            "Tage zu spät, welche Transportart für pünktliche Lieferung nötig wäre), danach die "
-            "späteren Wochen mit Fehlmenge.\n"
+            "- **Übersicht** – oben sechs Kacheln: Fehlt gesamt, Artikel je Dringlichkeit (mit "
+            "Stückzahlen) und Unterwegs (NRI). Darunter eine Zeile je Artikel, dringendste zuerst: "
+            "1 Rückstand fehlt → 2 Rückstand unterwegs (Ware kommt, aber zu spät) → 3 Engpass in der "
+            "Reaktionszeit → 4 später. Nur die Mengen, die zählen, plus Notiz Dispo (blau) und "
+            "Notiz Produktion (orange). Klick auf die Norm-Nr springt zur Detailkarte.\n"
+            "- **Details** – je Artikel eine große Karte: Kennzahlen (Bestand, Unterwegs, Fehlt, "
+            "Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag), ① Bestandsprognose (grün = "
+            "Bestand, rot = Fehlmenge, grau = Bedarf, blau = unterwegs/NRI – wie MD04) mit Bedarf je "
+            "Kunde, ② Vorschlag: dieselbe Prognose mit vorgeschlagenem Wareneingang (orange). Datum "
+            "und Menge stehen daneben in gelben Feldern, vorbelegt mit der Fehlmenge zum "
+            "Bedarfstermin – ändern, und das Diagramm rechnet sofort neu (Formeln, kein Makro). "
+            "Darunter die Termine: unterwegs (NRI), jede Einteilung im Rückstand und in der "
+            "Reaktionszeit mit „rechtzeitig / kommt später / fehlt“ und Hinweis, spätere Wochen mit "
+            "Fehlmenge. Beim Drucken steht jede Karte auf einer eigenen Seite.\n"
             "- **Wochen** – Bedarf, Zulauf und Fehlmenge je Kalenderwoche bis zum Vorschauende.\n"
             "- **Unterwegs** – alle Zugänge (ZMM1000) mit NRI, Spediteur und Ankunft.\n"
             "- **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen; sie "
