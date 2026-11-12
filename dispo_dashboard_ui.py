@@ -24,6 +24,8 @@ import streamlit as st
 from dispo_dashboard import config, loaders, logic
 
 import bestand_logik
+import edi_vergleich
+import edi_veraenderung_ui
 import produktionsbericht
 
 ORDNER_DATEI = ".dispo_sap_ordner.txt"
@@ -403,11 +405,21 @@ def _lade_und_berechne(ordner: str) -> dict:
         (label, loaders.datum_der_datei(dateien[t][0], stichtag), Path(dateien[t][0]).name)
         for t, label in QUELLEN if t in dateien
     ]
+    # EDI Veraenderung: aelterer Bedarfsexport im selben Ordner (Vortag / letzter Arbeitstag)
+    vortag = edi_vergleich.finde_vortag_datei(ordner, stichtag)
+    bedarf_vortag = None
+    if vortag:
+        try:
+            bedarf_vortag = {"df": loaders.lade_bedarf(vortag[0]), "datum": vortag[1], "name": Path(vortag[0]).name}
+        except (ValueError, KeyError):
+            bedarf_vortag = None
     return {
         "stichtag": stichtag,
         "positionen": positionen,
         "artikel": artikel,
         "zugang": zugang_vorbereitet,
+        "bedarf": bedarf,
+        "bedarf_vortag": bedarf_vortag,
         "bestand_je_charge": bestand_je_charge,
         "datenstand": datenstand,
         "scheindeckung": _scheindeckung(positionen, bestand_je_charge, stichtag),
@@ -1448,10 +1460,10 @@ def render_dispo_tab() -> None:
             with st.container(key="dispo_subtabs"):
                 (
                     reiter_rueckstand, reiter_rueckstand_bestand, reiter_deckung, reiter_abbau,
-                    reiter_langfrist, reiter_export,
+                    reiter_langfrist, reiter_export, reiter_edi,
                 ) = st.tabs(
                     ["Rückstand", "Rückstand mit Bestand", "Deckung je Artikel", "Abbauplan",
-                     "Langfristplanung", "Ausgabedatei"]
+                     "Langfristplanung", "Ausgabedatei", "EDI Veränderung"]
                 )
                 with reiter_rueckstand:
                     _render_rueckstand_tab(positionen, artikel)
@@ -1465,6 +1477,8 @@ def render_dispo_tab() -> None:
                     _render_langfrist_tab(positionen, artikel)
                 with reiter_export:
                     _render_export_tab(daten)
+                with reiter_edi:
+                    edi_veraenderung_ui.render_edi_tab(daten)
         else:
             st.info("Bitte unten SAP-Exporte hochladen, um das Dashboard zu sehen.")
 

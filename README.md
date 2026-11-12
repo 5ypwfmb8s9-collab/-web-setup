@@ -170,6 +170,34 @@ und Formeln hinter den Diagrammen liegen im ausgeblendeten Blatt
 hochladen, dann werden die Notizen je Artikel übernommen. Für die
 Wochenvorschau muss der Bedarfsexport aus SAP entsprechend weit reichen.
 
+## Dashboard Dispo: EDI Veränderung
+
+Unter-Reiter **EDI Veränderung** (`edi_vergleich.py`, Oberfläche
+`edi_veraenderung_ui.py`): vergleicht den Bedarfsexport von heute mit dem vom
+Vortag (montags dem vom Freitag) und zeigt, was der Kunde per EDI geändert hat.
+
+- **Daten:** beide Bedarfsexporte zusammen mit Bestand und Zugängen hochladen –
+  der ältere wird am Dateinamen (`EXPORT_JJJJMMTT_…`) als Vortag erkannt. Oder
+  den Vortages-Export im Reiter selbst hochladen. Wichtig: in SAP jeden Tag mit
+  **gleicher Auswahl und langem Zeitraum** ziehen (z. B. Ladedatum bis
+  +6 Monate) – verglichen wird nur, was beide Exporte abdecken.
+- **Vergleich je Lieferplan** (Artikel × Werk × Abladestelle) über die offene
+  Menge je Ladedatum; Termine bis heute zählen als „sofort“ (umdatierter
+  Rückstand ist keine Änderung). Unser Versand nimmt immer von vorne weg und
+  zählt nicht als Änderung.
+- **Kategorien:** ⬆️ Erhöhung · ⏪ vorgezogen · 🆕 neuer Lieferplan ·
+  ⏩ nach hinten verschoben · ⬇️ reduziert / rausgenommen · ❌ Lieferplan
+  entfallen · ❔ Einteilung der nächsten Tage weggefallen (vorab versendet oder
+  gestrichen?) · ✔️ versendet (ausgeblendet).
+- **Bewertung:** 🔴 mehr/früher innerhalb der Reaktionszeit (Standard 14 Tage)
+  und der Lieferplan hat jetzt Fehlmenge · 🟠 kurzfristig mehr/früher oder
+  Fehlmenge · 🔵 später, weniger oder langfristig gedeckt.
+- **Reagieren:** je Änderung (und als Sammel-Mail je Werk) öffnet ✉️ eine
+  E-Mail im Standard-Mailprogramm (Outlook) mit Betreff und Text (Deutsch oder
+  Englisch), CC `Dispo@normgmbh.de`. Empfänger je Kundenwerk können später in
+  `EDI_EMPFAENGER` (edi_vergleich.py) hinterlegt werden. Dazu Abrufkurve
+  (kumuliert, Vortag ↔ heute) und Excel-Export der Änderungen.
+
 ## Zentral hosten (Streamlit Community Cloud)
 
 Fuer Kollegen zugaenglich machen, ohne dass jeder Python lokal
