@@ -39,7 +39,10 @@ Geschaeftslogik (siehe Anfrage, anhand der Vorlage/Formeln verifiziert):
   Spalte I = Menge. Sortiert nach Werk (Blatt "Werke"), darin nach
   Abladestelle, Leerzeile zwischen Abladestellen-Gruppen.
 - Menge wird auf das naechste volle Vielfache der Fuellmenge aufgerundet
-  (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift - aber je
+  (ganze KLT/Packeinheiten), angepasste Menge in roter Schrift. Fuellmenge
+  je Abladestelle aus "Stammdaten" Spalte J (z. B. 970698000: CC1 1.050),
+  sonst je Artikel aus "Almanca Hilfsdaten"; Spalte J der Planung bekommt
+  dieselbe Formel (Anfrage 13.11.) - aber je
   Artikel nie ueber die nutzbaren KLT hinaus (sonst je Abladestelle bis zu
   einer KLT zu viel). Reicht der Bestand nicht, wird die juengste Zeile
   gekuerzt ("Bestand reicht nur fuer X KLT" in Z), der Rest wird Rueckstand.
@@ -99,6 +102,7 @@ import pandas as pd
 import streamlit as st
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill
+from openpyxl.worksheet.formula import ArrayFormula
 
 import bestand_logik
 from dispo_dashboard import config
@@ -111,7 +115,7 @@ GRUEN_FUELLUNG = PatternFill(patternType="solid", fgColor="FF92D050")
 GELB_FUELLUNG = PatternFill(patternType="solid", fgColor="FFFFFF00")
 # Spalten (1-basiert) der Vorlage, die NICHT per Formel befuellt werden
 # (Eingabe-/Notizspalten) - nur diese werden geschrieben/verschoben.
-SPALTE_LAGERORT, SPALTE_VW_NR, SPALTE_NORM_NR, SPALTE_MENGE = 3, 6, 7, 9
+SPALTE_LAGERORT, SPALTE_VW_NR, SPALTE_NORM_NR, SPALTE_MENGE, SPALTE_FUELLMENGE = 3, 6, 7, 9, 10
 SPALTE_LAGERAUFTRAG, SPALTE_LIEFERSCHEIN = 12, 13
 SPALTE_PALETTEN_TYP, SPALTE_PALETTEN_ANZAHL, SPALTE_HINWEIS = 14, 17, 26
 GELB_BIS_SPALTE = 20  # A bis T
@@ -126,9 +130,36 @@ def _kein_dhl_ups(abladestelle) -> bool:
 
 
 # --- Referenzdaten aus der Vorlage (Füllmenge, Palettentyp) -----------------
-# Füllmenge kommt aus bestand_logik (gemeinsame Quelle mit der Bestandsrechnung
-# dort/im Dashboard Dispo) - hier nur noch die Palettenspezifikation (wird
-# ausserhalb der Planung nicht gebraucht).
+# Füllmenge je Abladestelle aus "Stammdaten" Spalte J (Anfrage 13.11.), sonst
+# je Artikel aus bestand_logik ("Almanca Hilfsdaten" - gemeinsame Quelle mit
+# der Bestandsrechnung, die physische KLT je Charge zaehlt). Abladestellen
+# werden ohne Gross/Klein nachgeschlagen (Stammdaten "cc1" = Auftrag "CC1").
+
+def _normiere_lagerort(wert) -> str:
+    if wert is None:
+        return ""
+    if isinstance(wert, float) and wert.is_integer():
+        wert = int(wert)
+    return str(wert).strip()
+
+
+def _ort_schluessel(wert) -> str:
+    """Abladestelle/Lagerort zum Nachschlagen in den Vorlagen-Blaettern: ohne
+    Gross/Klein (in "Stammdaten" steht z. B. "cc1", im Auftrag "CC1" - Excel
+    unterscheidet beim Vergleichen auch nicht)."""
+    return _normiere_lagerort(wert).upper()
+
+
+def _lagerort_zellwert(abladestelle):
+    """Wert fuer Spalte C: reine Ziffern ohne fuehrende Null als Zahl (so, wie
+    Excel sie beim Eintippen speichert - in "Werke"/"Stammdaten" stehen z. B.
+    10362 und 83630 als Zahl, und Excels Nachschlage-Formeln finden Text dort
+    nicht). "02"/"04" bleiben Text wie in der Vorlage."""
+    text = _normiere_lagerort(abladestelle)
+    if text.isdigit() and not text.startswith("0"):
+        return int(text)
+    return text
+
 
 def _lade_palettenspezifikation() -> dict:
     """(Lagerort, Norm-Nr) -> {anzahl_pro_lage, anzahl_volle_palette, typ}
@@ -146,7 +177,7 @@ def _lade_palettenspezifikation() -> dict:
     tabelle["Norm NR."] = pd.to_numeric(tabelle["Norm NR."], errors="coerce")
     tabelle = tabelle.dropna(subset=["Norm NR."])
     tabelle["Norm NR."] = tabelle["Norm NR."].astype(int)
-    tabelle["Lagerort"] = tabelle["Lagerort"].astype(str).str.strip()
+    tabelle["Lagerort"] = tabelle["Lagerort"].map(_ort_schluessel)
     tabelle = tabelle.drop_duplicates(subset=["Lagerort", "Norm NR."], keep="first")
 
     spezifikation = {}
@@ -181,9 +212,12 @@ def _lade_klt_art() -> tuple[dict, dict]:
         for lagerort, norm_nr, art in zip(stamm["Lagerort"], stamm["Norm NR."], stamm["KLT Art"]):
             norm_nr = pd.to_numeric(norm_nr, errors="coerce")  # z. B. "B1017" ueberspringen
             if pd.notna(lagerort) and pd.notna(norm_nr) and code(art):
-                stamm_art.setdefault((str(lagerort).strip(), int(norm_nr)), code(art))
+                stamm_art.setdefault((_ort_schluessel(lagerort), int(norm_nr)), code(art))
         mali = pd.read_excel(VORLAGE_DATEI, sheet_name="Maliteslimalan")
-        sap_nr = {str(a).strip(): int(b) for a, b in zip(mali.iloc[:, 0], mali.iloc[:, 1]) if pd.notna(a) and pd.notna(b)}
+        sap_nr = {}
+        for a, b in zip(mali.iloc[:, 0], mali.iloc[:, 1]):
+            if pd.notna(a) and pd.notna(b):
+                sap_nr.setdefault(_ort_schluessel(a), int(b))
         sap = pd.read_excel(VORLAGE_DATEI, sheet_name="SAP Format Neu (Endtabelle)")
         sap = sap[sap.iloc[:, 2] == 3]
         codes = {"K810": "003147", "K811": "004147"}
@@ -206,19 +240,11 @@ _KLT_ART_STAMM, _KLT_ART_SAP = _lade_klt_art()
 
 def _klt_art(lagerort, norm_nr) -> str:
     """"003147" (klein), "004147" (gross) oder "" (unbekannt)."""
-    schluessel = (str(lagerort).strip(), int(norm_nr))
+    schluessel = (_ort_schluessel(lagerort), int(norm_nr))
     return _KLT_ART_STAMM.get(schluessel) or _KLT_ART_SAP.get(schluessel, "")
 
 # Standardwert, falls ein (Lagerort, Norm-Nr) nicht in Stammdaten vorkommt.
 _STANDARD_PALETTE = {"anzahl_pro_lage": 10, "anzahl_volle_palette": 10, "typ": ""}
-
-
-def _normiere_lagerort(wert) -> str:
-    if wert is None:
-        return ""
-    if isinstance(wert, float) and wert.is_integer():
-        wert = int(wert)
-    return str(wert).strip()
 
 
 def _lade_werke() -> dict:
@@ -231,7 +257,7 @@ def _lade_werke() -> dict:
     zuordnung = {}
     for code, werk in zip(werke.iloc[1:, 0], werke.iloc[1:, 2]):
         if pd.notna(code) and pd.notna(werk):
-            zuordnung.setdefault(_normiere_lagerort(code), _normiere_lagerort(werk))
+            zuordnung.setdefault(_ort_schluessel(code), _normiere_lagerort(werk))
     return zuordnung
 
 
@@ -243,7 +269,7 @@ def _werk_sortierung(abladestelle) -> tuple:
     Buchstaben-Werke wie IN, LD), Abladestellen ohne Werk ans Ende; innerhalb
     des Werks nach Abladestelle (Anfrage 05.11.)."""
     ablade = _normiere_lagerort(abladestelle)
-    werk = _WERKE.get(ablade)
+    werk = _WERKE.get(ablade.upper())
     if werk is None:
         return (2, 0, "", ablade)
     m = re.match(r"(\d+)(.*)", werk)
@@ -252,12 +278,41 @@ def _werk_sortierung(abladestelle) -> tuple:
     return (1, 0, werk, ablade)
 
 
-def _fuellmenge(norm_nr) -> float:
+def _lade_fuellmenge_je_ort() -> dict:
+    """(Lagerort, Norm-Nr) -> Füllmenge aus "Stammdaten" Spalte J - dort
+    stehen die Füllmengen je Abladestelle (z. B. 970698000: CC1 1.050,
+    307K2 1.100, sonst 1.000). Gelesen wird der von Excel gespeicherte Wert,
+    also genau das, was in der Vorlage angezeigt wird."""
+    try:
+        stamm = pd.read_excel(VORLAGE_DATEI, sheet_name="Stammdaten")
+    except (FileNotFoundError, ValueError):
+        return {}
+    if not {"Lagerort", "Norm NR.", "Füllmenge"} <= set(stamm.columns):
+        return {}
+    ergebnis = {}
+    for lagerort, norm_nr, menge in zip(stamm["Lagerort"], stamm["Norm NR."], stamm["Füllmenge"]):
+        norm_nr = pd.to_numeric(norm_nr, errors="coerce")
+        menge = pd.to_numeric(menge, errors="coerce")
+        if pd.notna(lagerort) and pd.notna(norm_nr) and pd.notna(menge) and menge > 0:
+            ergebnis.setdefault((_ort_schluessel(lagerort), int(norm_nr)), float(menge))
+    return ergebnis
+
+
+_FUELLMENGE_JE_ORT = _lade_fuellmenge_je_ort()
+
+
+def _fuellmenge(norm_nr, lagerort=None) -> float:
+    """Füllmenge je Abladestelle (Stammdaten J), sonst je Artikel
+    ("Almanca Hilfsdaten") - dieselbe Reihenfolge wie Formel J der Planung."""
+    if lagerort is not None:
+        menge = _FUELLMENGE_JE_ORT.get((_ort_schluessel(lagerort), int(norm_nr)))
+        if menge:
+            return menge
     return bestand_logik.fuellmenge(norm_nr)
 
 
 def _palettenspezifikation(lagerort: str, norm_nr) -> dict:
-    return _PALETTENSPEZIFIKATION.get((lagerort, norm_nr), _STANDARD_PALETTE)
+    return _PALETTENSPEZIFIKATION.get((_ort_schluessel(lagerort), norm_nr), _STANDARD_PALETTE)
 
 
 # --- Kundenauftraege -> Rueckstaende / Planbar -------------------------------
@@ -306,14 +361,13 @@ def _begrenze_auf_bestand(gerundet: pd.DataFrame, nutzbar: dict | None) -> tuple
         return gerundet, leer
     df = gerundet.sort_values(["Ladedatum", "Abladestelle"]).copy()
     df["Bestandshinweis"] = None
-    frei_klt: dict = {}
+    frei: dict = {}   # je Artikel noch freie Stueck (Fuellmenge kann je Abladestelle verschieden sein)
     zusatz = []
     for idx, r in df.iterrows():
         norm_nr, f = r["Norm-Nr"], r["Fuellmenge"]
-        if norm_nr not in frei_klt:
-            frei_klt[norm_nr] = int(nutzbar.get(norm_nr, 0) // f) if f else 0
-        klt = min(int(r["Packeinheiten"]), frei_klt[norm_nr])
-        frei_klt[norm_nr] -= klt
+        frei.setdefault(norm_nr, float(nutzbar.get(norm_nr, 0)))
+        klt = min(int(r["Packeinheiten"]), int(frei[norm_nr] // f) if f else 0)
+        frei[norm_nr] -= klt * f
         if klt == int(r["Packeinheiten"]):
             continue
         df.loc[idx, "Packeinheiten"] = klt
@@ -332,7 +386,7 @@ def _begrenze_auf_bestand(gerundet: pd.DataFrame, nutzbar: dict | None) -> tuple
 
 def _runde_auf_fuellmenge(gruppiert: pd.DataFrame) -> pd.DataFrame:
     df = gruppiert.copy()
-    df["Fuellmenge"] = df["Norm-Nr"].apply(_fuellmenge)
+    df["Fuellmenge"] = [_fuellmenge(n, a) for a, n in zip(df["Abladestelle"], df["Norm-Nr"])]
     df["Packeinheiten"] = (df["Menge"] / df["Fuellmenge"]).apply(math.ceil)
     df["Menge urspruenglich"] = df["Menge"]
     df["Menge"] = df["Packeinheiten"] * df["Fuellmenge"]
@@ -659,6 +713,35 @@ def _schreibe_ladedatum(zelle, ladedatum, zusatz: str | None = None) -> None:
         zelle.number_format = "DD.MM.YYYY"
 
 
+_FUELLMENGE_ALTE_FORMEL = "'Almanca Hilfsdaten'!$C$1:$D$447"
+
+
+def _fuellmenge_formel(zeile: int) -> str:
+    """Formel fuer Spalte J: Füllmenge je Abladestelle aus "Stammdaten" (Lagerort
+    in C ohne Unterschied Zahl/Text und Gross/Klein), sonst wie bisher je
+    Artikel aus "Almanca Hilfsdaten". INDEX/MATCH statt XLOOKUP, damit es auch
+    in aelteren Excel-Versionen rechnet."""
+    return (
+        f'=IF($G{zeile}="","",IFERROR(1/(1/INDEX(Stammdaten!$J$2:$J$1733,MATCH(1,'
+        f'((Stammdaten!$C$2:$C$1733&"")=($C{zeile}&""))*(Stammdaten!$G$2:$G$1733=$G{zeile}),0))),'
+        f'IFERROR(VLOOKUP($G{zeile},{_FUELLMENGE_ALTE_FORMEL},2,FALSE),"PRÜFEN")))'
+    )
+
+
+def _fuellmenge_formel_je_abladestelle(wb) -> None:
+    """Ersetzt in Almanca/DHL UPS/Rückstände die Füllmengen-Formel der Vorlage
+    (nur je Artikel) durch die je Abladestelle - damit Spalte J und K
+    (Packeinheiten) dieselbe Füllmenge zeigen, mit der die Planung rechnet."""
+    for blatt in ("Almanca", "DHL UPS", "Rückstände"):
+        if blatt not in wb.sheetnames:
+            continue
+        ws = wb[blatt]
+        for r in range(ERSTE_DATENZEILE, ws.max_row + 1):
+            zelle = ws.cell(row=r, column=SPALTE_FUELLMENGE)
+            if isinstance(zelle.value, str) and _FUELLMENGE_ALTE_FORMEL in zelle.value and "Stammdaten" not in zelle.value:
+                zelle.value = ArrayFormula(zelle.coordinate, _fuellmenge_formel(r))
+
+
 def _schreibe_zeilen(
     ws, zeilen: list[dict], *, rot_wenn_gerundet: bool, gruen_fuellung: bool,
     teilmenge_kombis: set = frozenset(), hinweis_artikel: set = frozenset(),
@@ -679,7 +762,7 @@ def _schreibe_zeilen(
         aktuelle_abladestelle = eintrag["Abladestelle"]
         kombi = (eintrag["Abladestelle"], eintrag["Norm-Nr"])
 
-        ws.cell(row=zeile_nr, column=SPALTE_LAGERORT, value=eintrag["Abladestelle"])
+        ws.cell(row=zeile_nr, column=SPALTE_LAGERORT, value=_lagerort_zellwert(eintrag["Abladestelle"]))
         ws.cell(row=zeile_nr, column=SPALTE_NORM_NR, value=int(eintrag["Norm-Nr"]))
         menge_zelle = ws.cell(row=zeile_nr, column=SPALTE_MENGE, value=eintrag["Menge"])
 
@@ -834,6 +917,7 @@ def erstelle_planungsdatei(
     rueckstand_anzeige = _markiere_eintreffende(rueckstand_anzeige, zugang_vorbereitet, planungsdatum)
 
     wb = openpyxl.load_workbook(VORLAGE_DATEI)
+    _fuellmenge_formel_je_abladestelle(wb)
     _schreibe_zeilen(
         wb["Almanca"], planungszeilen, rot_wenn_gerundet=True, gruen_fuellung=False,
         teilmenge_kombis=teilmengen, hinweis_artikel=hinweis_artikel,
@@ -1150,6 +1234,7 @@ def ergaenze_bestehende_planung(datei: bytes, auswahl: pd.DataFrame) -> bytes:
     Markierung wie in der Planung: VW-Nr rot, urspruengliches Ladedatum in L.
     Alles andere in der Datei (manuelle Eintraege, Lagerauftraege) bleibt."""
     wb = openpyxl.load_workbook(io.BytesIO(datei))
+    _fuellmenge_formel_je_abladestelle(wb)
     for blatt in ("Almanca", "DHL UPS"):
         teil = auswahl[auswahl["Ziel"] == blatt].sort_values(["Abladestelle", "Norm-Nr"])
         if teil.empty or blatt not in wb.sheetnames:
@@ -1190,7 +1275,7 @@ def artikel_diagnose(
     if norm_nr not in bestand_logik.FUELLMENGE_JE_ARTIKEL:
         meldungen.append("⚠️ Keine Füllmenge in \"Almanca Hilfsdaten\" – es wird mit 1 Stk/KLT gerechnet.")
     else:
-        meldungen.append(f"Füllmenge: {_stk(fm)} Stk/KLT.")
+        meldungen.append(f"Füllmenge je Artikel: {_stk(fm)} Stk/KLT (Almanca Hilfsdaten).")
 
     alle = positionen[positionen["Norm-Nr"] == norm_nr]
     offen = alle[alle["Offene Menge"] > 0]
@@ -1209,6 +1294,13 @@ def artikel_diagnose(
             f"Offener Bedarf bis {bis:%d.%m.%Y}: {_stk(fenster['Offene Menge'].sum())} Stk "
             f"in {len(fenster)} Position(en)."
         )
+        abweichend = sorted({
+            (_normiere_lagerort(a), _fuellmenge(norm_nr, a)) for a in fenster["Abladestelle"]
+            if _fuellmenge(norm_nr, a) != fm
+        })
+        if abweichend:
+            meldungen.append("Füllmenge je Abladestelle (Stammdaten): "
+                             + ", ".join(f"{a} {_stk(m)} Stk/KLT" for a, m in abweichend) + ".")
 
     # Bestand je Charge mit Bewertung
     zeilen = []

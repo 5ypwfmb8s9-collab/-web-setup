@@ -422,3 +422,59 @@ def test_planung_nach_werk_dann_abladestelle(monkeypatch):
     plan, _, _ = pe._baue_planung_und_versand(positionen, pe.bestand_logik.nutzbarer_bestand_je_artikel(bestand, pe.config.BESTAND_VERFUEGBAR))
     folge = list(dict.fromkeys(z["Abladestelle"] for z in plan))
     assert folge == ["BB1", "ZZ1", "CC1", "AA9", "DD1", "XX0"]  # 11 (BB1, ZZ1), 14S, 88, LD, ohne Werk
+
+
+# --- Füllmenge je Abladestelle (Stammdaten Spalte J), Abgleich ohne Gross/Klein -----
+
+def test_fuellmenge_je_abladestelle_aus_stammdaten():
+    # Stammdaten: 970698000 an "cc1" 1.050, "307k2" 1.100, sonst 1.000 (Almanca Hilfsdaten)
+    assert pe._fuellmenge(970698000, "CC1") == 1050
+    assert pe._fuellmenge(970698000, "cc1") == 1050
+    assert pe._fuellmenge(970698000, "307K2") == 1100
+    assert pe._fuellmenge(970698000, "106K4") == 1000
+    assert pe._fuellmenge(970698000) == 1000                 # ohne Abladestelle: je Artikel
+    assert pe._fuellmenge(970698000, "GIBTSNICHT") == 1000
+
+
+def test_stammdaten_ohne_gross_kleinschreibung():
+    spez = pe._palettenspezifikation("CC1", 970698000)       # steht als "cc1" in den Stammdaten
+    assert (spez["anzahl_pro_lage"], spez["anzahl_volle_palette"], spez["typ"]) == (20, 60, "VWPAL")
+    assert pe._klt_art("CC1", 970698000) == pe._klt_art("cc1", 970698000) == "003147"
+    assert pe._werk_sortierung("cc1")[:3] == pe._werk_sortierung("CC1")[:3]
+
+
+def test_zahlen_abladestelle_wird_als_zahl_geschrieben():
+    assert pe._lagerort_zellwert("10362") == 10362
+    assert pe._lagerort_zellwert("02") == "02"                # fuehrende Null bleibt Text wie in "Werke"
+    assert pe._lagerort_zellwert("CC1") == "CC1"
+
+
+def test_planung_rundet_je_abladestelle_und_formel_j():
+    positionen = _positionen([
+        (970698000, "CC1", "2026-11-04", 20000),
+        (970698000, "106K4", "2026-11-04", 20000),
+        (970698000, "307K2", "2026-11-05", 20000),
+    ])
+    bestand = _bestand({970698000: 100000})
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, bestand, _zugang([]), PLANUNG, stichtag=STICHTAG)
+    ws = openpyxl.load_workbook(io.BytesIO(inhalt))["Almanca"]
+    menge = {ws.cell(r, 3).value: ws.cell(r, 9).value for r in pe._belegte_zeilen(ws)}
+    assert menge == {"CC1": 21000, "106K4": 20000, "307K2": 20900}   # 20 × 1.050, 20 × 1.000, 19 × 1.100
+    zeile = next(r for r in pe._belegte_zeilen(ws) if ws.cell(r, 3).value == "CC1")
+    formel = ws.cell(zeile, pe.SPALTE_FUELLMENGE).value
+    assert "Stammdaten!$J$2:$J$1733" in formel.text and "Almanca Hilfsdaten" in formel.text
+    # auch leere Zeilen der Vorlage bekommen die neue Formel (manuelle Eintraege)
+    assert "Stammdaten" in ws.cell(600, pe.SPALTE_FUELLMENGE).value.text
+
+
+def test_bestand_reicht_bei_verschiedenen_fuellmengen_je_abladestelle(spez):
+    gerundet = pd.DataFrame([
+        {"Abladestelle": "A", "Norm-Nr": 7, "Ladedatum": pd.Timestamp("2026-10-01"), "Menge urspruenglich": 2000.0,
+         "Fuellmenge": 1050.0, "Packeinheiten": 2, "Menge": 2100.0, "Menge_gerundet": True, "VW-Nr": ""},
+        {"Abladestelle": "B", "Norm-Nr": 7, "Ladedatum": pd.Timestamp("2026-10-02"), "Menge urspruenglich": 1000.0,
+         "Fuellmenge": 1000.0, "Packeinheiten": 1, "Menge": 1000.0, "Menge_gerundet": False, "VW-Nr": ""},
+    ])
+    # 3.000 Stk nutzbar: A bekommt 2 × 1.050 = 2.100, fuer B bleiben 900 - keine volle KLT
+    begrenzt, zusatz = pe._begrenze_auf_bestand(gerundet, {7: 3000})
+    assert list(begrenzt["Abladestelle"]) == ["A"] and begrenzt["Menge"].iloc[0] == 2100
+    assert list(zusatz["Abladestelle"]) == ["B"] and zusatz["Offene Menge"].iloc[0] == 1000
