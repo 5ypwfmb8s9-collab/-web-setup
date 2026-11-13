@@ -1069,11 +1069,9 @@ def _render_positionsliste_alt(positionen: pd.DataFrame) -> None:
 
 
 _BERICHT_VORSCHAU_SPALTEN = {
-    "Rang": "Nr.", "Stufe_Text": "Dringlichkeit", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr",
-    "Bestand": "Bestand bei uns", "Unterwegs": "Unterwegs (NRI)",
-    "Rückstand fehlt": "Rückstand fehlt", "Rückstand später": "Rückstand unterwegs",
-    "Kurz fehlt": "Fehlt (Reaktionszeit)", "Später fehlt": "Fehlt später",
-    "Erster Engpass": "Erster Engpass",
+    "Rang": "Nr.", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr", "Bestand": "Bestand (nutzbar)",
+    "Bedarf bis Reaktionszeit": "Rückstand + Reaktionszeit", "Unterwegs": "Unterwegs", "NRI": "NRI · Ankunft · Menge",
+    "Gedeckt_Text": "Gedeckt bis Horizont?", "Ältester Liefertermin": "Ältester Abruf (Liefertermin)",
 }
 
 
@@ -1138,18 +1136,19 @@ def _render_artikel_karte(bericht: dict, gewaehlt: pd.Series, reaktion: int, woc
     if not verlauf:
         return
     basis, stichtag = bericht["basis"], bericht["stichtag"]
-    stufe = produktionsbericht.STUFEN[int(gewaehlt["Stufe"])]
+    gedeckt = bool(gewaehlt["Gedeckt"])
+    farbe = produktionsbericht.STUFEN[5 if gedeckt else 1]
     st.markdown(
         f"### {gewaehlt['Rang']}. {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}"
-        f"  <span style='background:#{stufe['fill']};color:#{stufe['font']};padding:2px 10px;border-radius:10px;"
-        f"font-size:0.8rem;font-weight:600'>{stufe['de'].format(tage=reaktion, wochen=wochen)}</span>",
+        f"  <span style='background:#{farbe['fill']};color:#{farbe['font']};padding:2px 10px;border-radius:10px;"
+        f"font-size:0.8rem;font-weight:600'>Gedeckt bis {wochen} Wo.: {'Ja' if gedeckt else 'Nein'}</span>",
         unsafe_allow_html=True,
     )
     if gewaehlt["Kurztext"]:
         st.caption(gewaehlt["Kurztext"])
     reichweite = gewaehlt["Reichweite Wochen"]
     k = st.columns(7)
-    k[0].metric("Bestand bei uns", _fmt_menge(gewaehlt["Bestand"]))
+    k[0].metric("Bestand (nutzbar)", _fmt_menge(gewaehlt["Bestand"]), help="Nur volle KLT je Charge, ohne OUT1")
     k[1].metric("Unterwegs (NRI)", _fmt_menge(gewaehlt["Unterwegs"]), f"{gewaehlt['Anzahl NRI']} NRI", delta_color="off")
     k[2].metric("Fehlt gesamt", _fmt_menge(gewaehlt["Fehlt gesamt"]))
     k[3].metric("Ø Bedarf / Woche", _fmt_menge(gewaehlt["Ø Woche"]))
@@ -1161,18 +1160,11 @@ def _render_artikel_karte(bericht: dict, gewaehlt: pd.Series, reaktion: int, woc
     st.caption(f"Ø-Bedarf aus {basis['von']:%d.%m.}–{basis['bis']:%d.%m.} ({basis_wochen} Wochen) · "
                "Reichweite = (Bestand + unterwegs) / Ø Woche")
 
-    links, rechts = st.columns([3, 1])
+    links, rechts = st.columns([3, 2])
     with links:
         st.altair_chart(_prognose_diagramm(verlauf, stichtag, "① Bestandsprognose – Ist"), use_container_width=True)
     with rechts:
-        st.markdown("**Bedarf je Kunde**")
-        kunden = bericht["kunden"].get(norm_nr)
-        if kunden is not None and not kunden.empty:
-            tabelle = kunden[["Kunde", "Anteil", "Ø Woche", "Ø Monat"]].copy()
-            tabelle["Anteil"] = tabelle["Anteil"].apply(lambda a: f"{a:.0%}")
-            for s in ("Ø Woche", "Ø Monat"):
-                tabelle[s] = tabelle[s].apply(_fmt_menge)
-            st.dataframe(tabelle, hide_index=True, use_container_width=True, height=_tabellenhoehe(len(tabelle)))
+        _render_abrufe(produktionsbericht.abrufe_tabelle(bericht, norm_nr), stichtag)
 
     vorschlaege = bericht["vorschlag"].get(norm_nr, [])
     zeilen = produktionsbericht.MAX_VORSCHLAEGE
@@ -1205,21 +1197,65 @@ def _render_artikel_karte(bericht: dict, gewaehlt: pd.Series, reaktion: int, woc
     with links:
         st.altair_chart(_prognose_diagramm(mit, stichtag, "② Vorschlag – mit Wareneingang"), use_container_width=True)
 
+    kunden = bericht["kunden"].get(norm_nr)
+    if kunden is not None and not kunden.empty:
+        st.markdown("**Bedarf je Kunde**")
+        tabelle = kunden[["Kunde", "Anteil", "Ø Woche", "Ø Monat", "Bedarf"]].copy()
+        tabelle["Anteil"] = tabelle["Anteil"].apply(lambda a: f"{a:.0%}")
+        for s in ("Ø Woche", "Ø Monat", "Bedarf"):
+            tabelle[s] = tabelle[s].apply(_fmt_menge)
+        st.dataframe(tabelle.rename(columns={"Bedarf": "Bedarf bis Vorschauende"}), hide_index=True,
+                     use_container_width=True, height=_tabellenhoehe(len(tabelle)))
+
+
+def _render_abrufe(daten: dict, stichtag) -> None:
+    """Wie in der Excel-Karte: Bestand + NRI, darunter die Abrufe der
+    naechsten 4 Wochen mit Rest; rot ab der Zeile, ab der es nicht reicht."""
+    st.markdown("**Unterwegs & Abrufe (4 Wochen)**")
+    zeilen = [{"Herkunft": "Bestand (nutzbar)", "Ankunft": "", "Menge": _fmt_menge(daten["bestand"])}]
+    zeilen += [{"Herkunft": nri, "Ankunft": _fmt_datum(ankunft), "Menge": _fmt_menge(menge)}
+               for nri, ankunft, menge in daten["nri"]]
+    zeilen.append({"Herkunft": "Verfügbar gesamt", "Ankunft": "", "Menge": _fmt_menge(daten["verfuegbar"])})
+    st.dataframe(pd.DataFrame(zeilen), hide_index=True, use_container_width=True, height=_tabellenhoehe(len(zeilen)))
+    abrufe = daten["abrufe"]
+    if abrufe.empty:
+        st.caption("Keine Abrufe in den nächsten 4 Wochen.")
+        return
+    st_ = pd.Timestamp(stichtag)
+    tabelle = pd.DataFrame({
+        "Ladedatum": abrufe["Ladedatum"].map(lambda d: "sofort" if d <= st_ else _fmt_datum(d)),
+        "Abladestelle": abrufe["Abladestelle"],
+        "Liefertermin": abrufe["Liefertermin"].map(_fmt_datum),
+        "Menge": abrufe["Menge"].map(_fmt_menge),
+        "Rest": abrufe["Rest"].map(lambda r: f"{r:,.0f}".replace(",", ".")),
+    })
+    rot_ab = abrufe["Rest"].lt(-1e-9).cummax().tolist()
+    st.dataframe(
+        tabelle.style.apply(lambda zeile: ["color: #dc2626" if rot_ab[zeile.name] else "" for _ in zeile], axis=1),
+        hide_index=True, use_container_width=True, height=_tabellenhoehe(len(tabelle)),
+    )
+    if daten["gedeckt"]:
+        st.markdown(f":green[**Summe {_fmt_menge(daten['summe'])} Stk – gedeckt ✓**]")
+    else:
+        st.markdown(f":red[**Summe {_fmt_menge(daten['summe'])} Stk – es fehlen {_fmt_menge(-daten['rest'])} Stk**]")
+
 
 def _render_bericht_vorschau(bericht: dict, reaktion: int, wochen: int) -> None:
     artikel = bericht["artikel"]
     vorschau = artikel.copy()
-    vorschau["Stufe_Text"] = vorschau["Stufe"].map(
-        lambda s: produktionsbericht.STUFEN[s]["de"].format(tage=reaktion, wochen=wochen)
-    )
+    unterwegs = bericht["unterwegs"]
+    vorschau["NRI"] = [" | ".join(produktionsbericht._nri_zeilen(unterwegs[unterwegs["Norm-Nr"] == n], 99))
+                       for n in vorschau["Norm-Nr"]]
+    vorschau["Gedeckt_Text"] = vorschau["Gedeckt"].map(lambda g: "🟢 Ja" if g else "🔴 Nein")
     vorschau = vorschau[list(_BERICHT_VORSCHAU_SPALTEN)].rename(columns=_BERICHT_VORSCHAU_SPALTEN)
     anzeige = vorschau.copy()
-    for s in ("Bestand bei uns", "Unterwegs (NRI)", "Rückstand fehlt", "Rückstand unterwegs",
-              "Fehlt (Reaktionszeit)", "Fehlt später"):
+    for s in ("Bestand (nutzbar)", "Rückstand + Reaktionszeit", "Unterwegs"):
         anzeige[s] = anzeige[s].apply(lambda w: "" if not w else _fmt_menge(w))
-    anzeige["Erster Engpass"] = anzeige["Erster Engpass"].apply(_fmt_datum)
-    st.caption("Artikel anklicken → Detailkarte mit Prognose, Ø-Bedarf und einstellbarem Wareneingang "
-               "(wie in der Excel-Datei).")
+    anzeige["Ältester Abruf (Liefertermin)"] = anzeige["Ältester Abruf (Liefertermin)"].apply(_fmt_datum)
+    anzeige = anzeige.rename(columns={"Rückstand + Reaktionszeit": f"Rückstand + {reaktion} Tage",
+                                      "Gedeckt bis Horizont?": f"Gedeckt bis {wochen} Wo.?"})
+    st.caption("👁 Artikel anklicken → Detailkarte mit Prognose, NRI und Abrufen der nächsten 4 Wochen und "
+               "einstellbarem Wareneingang (wie in der Excel-Datei). Bestand = nur nutzbare Menge (volle KLT je Charge).")
     auswahl = st.dataframe(
         anzeige, hide_index=True, use_container_width=True,
         on_select="rerun", selection_mode="single-row",
@@ -1272,17 +1308,21 @@ def _render_export_tab(daten: dict) -> None:
 
     bericht = produktionsbericht.berechne_bericht(
         positionen, daten.get("zugang"), stichtag, reaktion, wochen, gedeckte,
+        bestand_je_charge=daten.get("bestand_je_charge"),
     )
     kz = produktionsbericht.kennzahlen(bericht)
-    stufen = kz["je_stufe"]
-    mengen = kz["menge_je_stufe"]
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Rückstand – fehlt", stufen[1], f"{_fmt_menge(mengen[1])} Stk", delta_color="off")
-    m2.metric("Rückstand – unterwegs", stufen[2], f"{_fmt_menge(mengen[2])} Stk", delta_color="off")
-    m3.metric(f"Engpass ≤ {reaktion} Tage", stufen[3], f"{_fmt_menge(mengen[3])} Stk", delta_color="off")
-    m4.metric(f"Später ≤ {wochen} Wochen", stufen[4], f"{_fmt_menge(mengen[4])} Stk", delta_color="off")
-    m5.metric("NRI für diese Artikel", kz["nri_bericht"], f"{_fmt_menge(kz['unterwegs_menge'])} Stk", delta_color="off")
-    m6.metric("Fehlt gesamt", _fmt_menge(kz["fehlt_gesamt"]))
+    artikel_b = bericht["artikel"]
+    offen = int((~artikel_b["Gedeckt"].astype(bool)).sum()) if not artikel_b.empty else 0
+    kurz = float(artikel_b["Bedarf bis Reaktionszeit"].sum()) if not artikel_b.empty else 0.0
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric(f"Handlungsbedarf (nicht gedeckt bis {wochen} Wo.)", offen, f"von {kz['artikel']} Artikeln",
+              delta_color="off", delta_arrow="off")
+    m2.metric("Fehlt gesamt", _fmt_menge(kz["fehlt_gesamt"]), "Stück aus der Türkei", delta_color="off", delta_arrow="off")
+    m3.metric(f"Rückstand + {reaktion} Tage", _fmt_menge(kurz), "Stück Bedarf", delta_color="off", delta_arrow="off")
+    m4.metric("Unterwegs (NRI)", _fmt_menge(kz["unterwegs_menge"]), f"{kz['nri_bericht']} NRI",
+              delta_color="off", delta_arrow="off")
+    m5.metric(f"Gedeckt bis {wochen} Wo.", kz["artikel"] - offen, "kein Handlungsbedarf",
+              delta_color="off", delta_arrow="off")
 
     letztes = positionen["Ladedatum"].max() if not positionen.empty else pd.NaT
     if pd.notna(letztes) and letztes < bericht["horizont"] - pd.Timedelta(days=7):
@@ -1318,20 +1358,16 @@ def _render_export_tab(daten: dict) -> None:
         _render_bericht_vorschau(bericht, reaktion, wochen)
     with st.expander("So ist die Datei aufgebaut"):
         st.markdown(
-            "- **Übersicht** – oben sechs Kacheln: Fehlt gesamt, Artikel je Dringlichkeit (mit "
-            "Stückzahlen) und Unterwegs (NRI). Darunter eine Zeile je Artikel, dringendste zuerst: "
-            "1 Rückstand fehlt → 2 Rückstand unterwegs (Ware kommt, aber zu spät) → 3 Engpass in der "
-            "Reaktionszeit → 4 später. Nur die Mengen, die zählen, plus Notiz Dispo (blau) und "
-            "Notiz Produktion (orange). Klick auf die Norm-Nr springt zur Detailkarte.\n"
-            "- **Details** – je Artikel eine große Karte: Kennzahlen (Bestand, Unterwegs, Fehlt, "
-            "Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag), ① Bestandsprognose (grün = "
-            "Bestand, rot = Fehlmenge, grau = Bedarf, blau = unterwegs/NRI – wie MD04) mit Bedarf je "
-            "Kunde, ② Vorschlag: dieselbe Prognose mit vorgeschlagenem Wareneingang (orange). Datum "
-            "und Menge stehen daneben in gelben Feldern, vorbelegt mit der Fehlmenge zum "
-            "Bedarfstermin – ändern, und das Diagramm rechnet sofort neu (Formeln, kein Makro). "
-            "Darunter die Termine: unterwegs (NRI), jede Einteilung im Rückstand und in der "
-            "Reaktionszeit mit „rechtzeitig / kommt später / fehlt“ und Hinweis, spätere Wochen mit "
-            "Fehlmenge. Beim Drucken steht jede Karte auf einer eigenen Seite.\n"
+            "- **Übersicht** – Kurzübersicht: oben fünf Kacheln (Handlungsbedarf, Fehlt gesamt, Rückstand + "
+            "Reaktionszeit, Unterwegs, gedeckt). Je Artikel drei Zeilen: 👁 Details (Link), Norm-Nr, VW-Nr, "
+            "Bestand (nur nutzbar: volle KLT je Charge, ohne OUT1), Bedarf Rückstand + Reaktionszeit, Unterwegs "
+            "mit NRI-Liste (NRI · Ankunft · Menge), ein Status „gedeckt bis Horizont? Ja/Nein“, ältester Abruf "
+            "(Liefertermin), Notiz Dispo (blau) und Notiz Produktion (orange). Artikel mit Handlungsbedarf "
+            "stehen oben.\n"
+            "- **Details** – je Artikel eine Karte: Kennzahlen, ① Bestandsprognose je Woche, daneben Bestand + NRI "
+            "und die Abrufe der nächsten 4 Wochen mit Rest (rot ab der Zeile, ab der es nicht mehr reicht; Summe "
+            "grün = gedeckt, rot = fehlt), ② Vorschlag mit einstellbarem Wareneingang (gelbe Felder, das Diagramm "
+            "rechnet sofort neu), Bedarf je Kunde. Beim Drucken steht jede Karte auf einer eigenen Seite.\n"
             "- **Wochen** – Bedarf, Zulauf und Fehlmenge je Kalenderwoche bis zum Vorschauende.\n"
             "- **Unterwegs** – alle Zugänge (ZMM1000) mit NRI, Spediteur und Ankunft.\n"
             "- **Notizen-Archiv** – Notizen von Artikeln, die gerade nicht im Bericht stehen; sie "
