@@ -83,7 +83,7 @@ BLATT_DATEN = "Diagrammdaten"
 
 KOPFZEILE = 4            # Wochen, Unterwegs, Archiv (Details: Karten ab ERSTE_ZEILE)
 ERSTE_ZEILE = 5
-UEBERSICHT_KOPFZEILE = 9    # Uebersicht: darueber Titel + Kacheln
+UEBERSICHT_KOPFZEILE = 10   # Uebersicht: darueber Titel, Kacheln, Hinweise (DE + TR)
 UEBERSICHT_ERSTE_ZEILE = UEBERSICHT_KOPFZEILE + 1
 
 STANDARD_REAKTION_TAGE = 14
@@ -104,6 +104,28 @@ STUFEN = {
     3: {"de": "Engpass ≤ {tage} Tage", "tr": "Darboğaz ≤ {tage} gün", "fill": "FEF3C7", "font": "92400E", "balken": "D97706"},
     4: {"de": "Später ≤ {wochen} Wochen", "tr": "İleride ≤ {wochen} hafta", "fill": "DBEAFE", "font": "1E40AF", "balken": "2563EB"},
     5: {"de": "Gedeckt", "tr": "Karşılandı", "fill": "DCFCE7", "font": "166534", "balken": "16A34A"},
+}
+
+# Dringlichkeits-Bloecke der Uebersicht (Reihenfolge der Liste). Massgeblich
+# ist der aelteste Abruf OHNE WARE: ein offener Abruf, den wir nicht
+# rechtzeitig aus nutzbarem Bestand oder einem rechtzeitigen Zugang liefern
+# koennen. Abrufe, fuer die die Ware bei uns liegt (nur noch nicht versendet),
+# zaehlen nicht - das ist Sache der Dispo, nicht der Produktion.
+#   1 Rueckstand   Ladedatum bis einschliesslich Stichtag (Stufe 1 + 2)
+#   2 Engpass      Ladedatum innerhalb der Reaktionszeit (Stufe 3)
+#   3 Langfristig  spaeter, bis zum Horizont (Stufe 4)
+#   4 Gedeckt      kein Abruf ohne Ware (Stufe 5, nur auf Wunsch im Bericht)
+# "stufe" = Farbsatz aus STUFEN.
+GRUPPE_VON_STUFE = {1: 1, 2: 1, 3: 2, 4: 3, 5: 4}
+GRUPPEN = {
+    1: {"de": "Rückstand – Termin überschritten", "tr": "Gecikme – termin geçti",
+        "kurz_de": "Rückstand", "kurz_tr": "Gecikme", "stufe": 1, "hell": "FEF2F2"},
+    2: {"de": "Engpass in den nächsten {tage} Tagen", "tr": "Önümüzdeki {tage} günde darboğaz",
+        "kurz_de": "Engpass ≤ {tage} Tage", "kurz_tr": "Darboğaz ≤ {tage} gün", "stufe": 3, "hell": "FFFBEB"},
+    3: {"de": "Langfristig – bis {wochen} Wochen", "tr": "Uzun vadeli – {wochen} haftaya kadar",
+        "kurz_de": "Später ≤ {wochen} Wochen", "kurz_tr": "İleride ≤ {wochen} hafta", "stufe": 4, "hell": "EFF6FF"},
+    4: {"de": "Gedeckt – kein Engpass", "tr": "Karşılanıyor – darboğaz yok",
+        "kurz_de": "Gedeckt", "kurz_tr": "Karşılandı", "stufe": 5, "hell": "F0FDF4"},
 }
 
 TRANSPORT_TR = {"Luftfracht": "Hava kargo", "Minivan": "Minivan", "Express LKW": "Ekspres kamyon", "LKW": "Kamyon"}
@@ -474,6 +496,15 @@ def berechne_bericht(
         kurz = z[z["Bereich"] == "kurz"]
         lang = z[z["Bereich"] == "lang"]
         erster = problem["Ladedatum"].min() if not problem.empty else pd.NaT
+        # Aeltester Abruf ohne Ware = erste Zeile (nach Ladedatum), die nicht rechtzeitig
+        # geliefert werden kann; "erster" ist ihr Ladedatum, "ohne_ware" ihr Liefertermin
+        # (Anzeige in der Uebersicht + Reihenfolge im Block).
+        ohne_ware = pd.NaT
+        if not problem.empty:
+            if "Wunschtermin" in problem.columns:
+                ohne_ware = problem.loc[problem["Ladedatum"] == erster, "Wunschtermin"].min()
+            if pd.isna(ohne_ware):
+                ohne_ware = erster
         if rueck["Fehlt"].sum() > 0:
             stufe = 1
         elif rueck["Spaet"].sum() > 0:
@@ -514,21 +545,28 @@ def berechne_bericht(
             "Ø Monat": je_woche * 52.0 / 12.0,
             "Reichweite Wochen": ((bestand + unterwegs_menge) / je_woche) if je_woche > 0 else None,
             "Stufe": stufe,
+            "Gruppe": GRUPPE_VON_STUFE[stufe],
+            "Abruf ohne Ware": ohne_ware,
         })
     artikel_df = pd.DataFrame(artikel)
     if artikel_df.empty:
-        artikel_df = pd.DataFrame(columns=["Norm-Nr", "Stufe", "Erster Engpass", "Fehlt gesamt", "Rang"])
+        artikel_df = pd.DataFrame(columns=["Norm-Nr", "Stufe", "Gruppe", "Erster Engpass", "Abruf ohne Ware",
+                                           "Fehlt gesamt", "Gedeckt", "Rang"])
     else:
         if not gedeckte_aufnehmen:
             artikel_df = artikel_df[artikel_df["Stufe"] <= 4]
-        # Zuerst alle Artikel, bei denen wirklich etwas fehlt (Handlungsbedarf
-        # fuer die Produktion: nicht gedeckt bis zum Horizont), dann die, deren
-        # Ware schon unterwegs ist; darin nach Stufe, erstem Engpass, Menge.
+        # Reihenfolge = Dringlichkeit (Anfrage 13.11.): erst der Block Rueckstand
+        # (Termin ueberschritten), dann Engpass in der Reaktionszeit, dann
+        # langfristig, zuletzt gedeckt. Im Block: aeltester Liefertermin ohne
+        # Ware zuerst - genau das Datum, das in der Uebersicht steht. Bei
+        # gleichem Termin: erst Artikel mit Handlungsbedarf (nicht gedeckt),
+        # dann die groessere Menge.
         artikel_df = artikel_df.assign(
             _ohne_fehlt=(artikel_df["Fehlt gesamt"] <= 0).astype(int),
             _menge=artikel_df["Fehlt gesamt"] + artikel_df["Rückstand später"] + artikel_df["Kurz später"],
-        ).sort_values(["_ohne_fehlt", "Stufe", "Erster Engpass", "_menge", "Norm-Nr"],
-                      ascending=[True, True, True, False, True], na_position="last", kind="stable")
+        ).sort_values(["Gruppe", "Abruf ohne Ware", "Erster Engpass", "_ohne_fehlt", "_menge",
+                       "Ältester Liefertermin", "Norm-Nr"],
+                      ascending=[True, True, True, True, False, True, True], na_position="last", kind="stable")
         artikel_df = artikel_df.drop(columns=["_ohne_fehlt", "_menge"]).reset_index(drop=True)
         artikel_df["Rang"] = range(1, len(artikel_df) + 1)
 
@@ -594,6 +632,8 @@ def berechne_bericht(
         }
     dashboard = {
         "artikel": int(len(artikel_df)),
+        "je_gruppe": {g: int((artikel_df["Gruppe"] == g).sum()) if not artikel_df.empty else 0 for g in GRUPPEN},
+        "handlungsbedarf": int((~artikel_df["Gedeckt"].astype(bool)).sum()) if not artikel_df.empty else 0,
         "je_stufe": je_stufe,
         "fehlt_gesamt": float(artikel_df["Fehlt gesamt"].sum()) if not artikel_df.empty else 0.0,
         "rueckstand_spaeter": float(artikel_df["Rückstand später"].sum()) if not artikel_df.empty else 0.0,
@@ -783,11 +823,11 @@ UEBERSICHT_SPALTEN = [
     ("Unterwegs", "Yolda", 12),
     ("NRI · Ankunft · Menge", "NRI · Varış · Miktar", 38),
     ("Gedeckt bis {wochen} Wo.?", "{wochen} hf. karşılanıyor mu?", 15),
-    ("Ältester Abruf (Liefertermin)", "En eski çağrı (teslim tarihi)", 16),
+    ("Ältester Abruf ohne Ware (Liefertermin)", "Malı olmayan en eski çağrı (teslim tarihi)", 22),
     ("Notiz Dispo", "Dispo notu", 38),
     ("Notiz Produktion", "Üretim notu (Türkiye)", 38),
 ]
-U_DETAILS, U_NORM, U_NRI, U_NOTIZ_DISPO, U_NOTIZ_PROD = 2, 3, 8, 11, 12
+U_DETAILS, U_NORM, U_NRI, U_TERMIN, U_NOTIZ_DISPO, U_NOTIZ_PROD = 2, 3, 8, 10, 11, 12
 _U_SPALTE = {name: i for i, (name, _, _) in enumerate(UEBERSICHT_SPALTEN, start=1)}
 # Kacheln oben in der Uebersicht: (von, bis) Spalten
 _U_KACHELN = [(1, 3), (4, 5), (6, 7), (8, 8), (9, 10)]
@@ -1068,25 +1108,29 @@ def _kachel(ws, zeile: int, von: int, bis: int, titel: str, wert, untertitel: st
 
 
 def _schreibe_kacheln(ws, bericht: dict, zeile: int = 4) -> None:
+    """Fuenf Kacheln, die die Liste darunter zusammenfassen: die drei
+    Dringlichkeits-Bloecke, der Handlungsbedarf (nicht gedeckt) und Unterwegs."""
     d, rt, wo, st = bericht["dashboard"], bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
-    a = bericht["artikel"]
-    offen = int((~a["Gedeckt"].astype(bool)).sum()) if not a.empty else 0
-    gedeckt = len(a) - offen
-    kurz = float(a["Bedarf bis Reaktionszeit"].sum()) if not a.empty else 0.0
+    je = d["je_gruppe"]
+    grenze = st + pd.Timedelta(days=rt)
     ankunft = d["naechste_ankunft"]
+
+    def _block(gruppe: int, unter: str, dunkel: bool = False):
+        g, anzahl = GRUPPEN[gruppe], je[gruppe]
+        farben = STUFEN[g["stufe"]]
+        return (f"{g['de'].format(tage=rt, wochen=wo)}  /  {g['tr'].format(tage=rt, wochen=wo)}", anzahl, unter,
+                farben["balken"], farben["font"] if anzahl else _TEXT_HELL, dunkel, "0")
+
     kacheln = [
-        (f"Handlungsbedarf (nicht gedeckt bis {wo} Wo.)  /  Aksiyon gerekli", offen,
-         f"von {len(a)} Artikeln / parçadan", _ROT, "FFFFFF", True, "0"),
-        ("Fehlt gesamt  /  Toplam eksik", d["fehlt_gesamt"], "Stück aus der Türkei / Türkiye'den adet",
-         _ROT, _ROT if d["fehlt_gesamt"] else _TEXT_HELL, False, _MENGE_NULL),
-        (f"Rückstand + {rt} Tage  /  Gecikme + {rt} gün", kurz,
-         f"Stück Bedarf bis {st + pd.Timedelta(days=rt):%d.%m.} / adet ihtiyaç", STUFEN[3]["balken"],
-         STUFEN[3]["font"] if kurz else _TEXT_HELL, False, _MENGE_NULL),
+        _block(1, f"Artikel · Ladedatum bis {st:%d.%m.}  /  parça · yükleme ≤ {st:%d.%m.}", dunkel=True),
+        _block(2, f"Artikel · Ladedatum bis {grenze:%d.%m.}  /  parça"),
+        _block(3, f"Artikel · bis {bericht['horizont']:%d.%m.%Y}  /  parça"),
+        (f"Handlungsbedarf – nicht gedeckt bis {wo} Wo.  /  Aksiyon gerekli", d["handlungsbedarf"],
+         f"Artikel · fehlt gesamt {_menge_text(d['fehlt_gesamt'])} Stück aus der Türkei  /  parça · toplam eksik",
+         _ROT, _ROT if d["handlungsbedarf"] else _GRUEN, False, "0"),
         ("Unterwegs zu uns (NRI)  /  Bize doğru yolda", d["unterwegs_menge"],
          f"Stück · {d['nri_bericht']} NRI" + (f" · ab / ilk {_datum_kurz(ankunft)}" if pd.notna(ankunft) else ""),
          _LINK, _BLAU if d["unterwegs_menge"] else _TEXT_HELL, False, _MENGE_NULL),
-        (f"Gedeckt bis {wo} Wo.  /  Karşılanıyor", gedeckt, "kein Handlungsbedarf / aksiyon gerekmez",
-         STUFEN[5]["balken"], STUFEN[5]["font"] if gedeckt else _TEXT_HELL, False, "0"),
     ]
     for (titel, wert, unter, akzent, farbe, dunkel, fmt), (von, bis) in zip(kacheln, _U_KACHELN):
         _kachel(ws, zeile, von, bis, titel, wert, unter, akzent, farbe, dunkel, fmt)
@@ -1111,6 +1155,30 @@ def _nri_zeilen(unterwegs: pd.DataFrame, plaetze: int = ZEILEN_JE_ARTIKEL) -> li
     return zeilen
 
 
+def _gruppen_zeile(ws, zeile: int, gruppe: int, anzahl: int, bericht: dict) -> None:
+    """Ueberschrift eines Dringlichkeits-Blocks in der Uebersicht (macht die
+    Reihenfolge der Liste sichtbar)."""
+    rt, wo, st = bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
+    grenze = st + pd.Timedelta(days=rt)
+    ein_tag = pd.Timedelta(days=1)
+    g = GRUPPEN[gruppe]
+    farben = STUFEN[g["stufe"]]
+    bereich = {
+        1: f"Ladedatum / yükleme tarihi ≤ {st:%d.%m.}",
+        2: f"Ladedatum / yükleme tarihi {st + ein_tag:%d.%m.} – {grenze:%d.%m.}",
+        3: f"Ladedatum / yükleme tarihi {grenze + ein_tag:%d.%m.} – {bericht['horizont']:%d.%m.%Y}",
+        4: "kein Abruf ohne Ware / tüm çağrılar karşılanıyor",
+    }[gruppe]
+    letzte = len(UEBERSICHT_SPALTEN)
+    zelle = _zusammen(ws, zeile, 1, letzte, _reich(
+        (f"{g['de'].format(tage=rt, wochen=wo)}  ·  {g['tr'].format(tage=rt, wochen=wo)}", _inline(10, farben["font"], True)),
+        (f"        {anzahl} Artikel / parça  ·  {bereich}", _inline(9, _TEXT_MITTEL)),
+    ))
+    zelle.alignment = Alignment(vertical="center", indent=1)
+    _stil_bereich(ws, zeile, 1, letzte, _fuellung(g["hell"]), Border(top=Side(style="medium", color=farben["balken"])))
+    ws.row_dimensions[zeile].height = 22
+
+
 def _schreibe_uebersicht(ws, bericht: dict, notizen: dict) -> dict:
     a, unterwegs = bericht["artikel"], bericht["unterwegs"]
     rt, wo, st = bericht["reaktion_tage"], bericht["wochen_horizont"], bericht["stichtag"]
@@ -1127,28 +1195,45 @@ def _schreibe_uebersicht(ws, bericht: dict, notizen: dict) -> dict:
     ws.row_dimensions[7].height = 10
     ws.cell(8, 1, value=_reich(
         ("👁 Details anklicken → Prognose, NRI und Abrufe je Artikel", _inline(9, _LINK, True)),
-        ("  ·  👁 Detay'a tıklayın → tahmin, NRI ve çağrılar", _inline(9, _LINK)),
-        ("     Bestand = nur nutzbare Menge (volle KLT je Charge) · „Gedeckt“ = Bestand + unterwegs reichen bis "
-         f"{wo} Wochen / Stok = sadece kullanılabilir miktar · „Karşılanıyor“ = stok + yolda {wo} haftaya yetiyor",
+        (f"      Reihenfolge = Dringlichkeit: Rückstand → Engpass in {rt} Tagen → langfristig, im Block ältester "
+         "Liefertermin zuerst  ·  „ohne Ware“ = nicht rechtzeitig im Bestand oder unterwegs  ·  Bestand = nur volle "
+         f"KLT je Charge  ·  „Gedeckt“ = Bestand + unterwegs reichen für alle Abrufe bis {wo} Wochen",
          _inline(9, _TEXT_HELL)),
     ))
-    ws.row_dimensions[8].height = 18
+    ws.cell(9, 1, value=_reich(
+        ("👁 Detay'a tıklayın → tahmin, NRI ve çağrılar", _inline(9, _LINK, True)),
+        (f"      Sıralama = aciliyet: gecikme → {rt} günde darboğaz → uzun vadeli, blok içinde en eski teslim tarihi "
+         "önce  ·  „malı olmayan“ = mal zamanında ne stokta ne yolda  ·  Stok = sadece tam KLT  ·  „Karşılanıyor“ = "
+         f"stok + yolda, {wo} haftaya kadar tüm çağrılara yetiyor", _inline(9, _TEXT_HELL)),
+    ))
+    ws.row_dimensions[8].height = 16
+    ws.row_dimensions[9].height = 18
     _kopf(ws, UEBERSICHT_SPALTEN, rt, wo, zeile=UEBERSICHT_KOPFZEILE)
-    ws.row_dimensions[UEBERSICHT_KOPFZEILE].height = 46
+    ws.row_dimensions[UEBERSICHT_KOPFZEILE].height = 50
     if a.empty:
         ws.cell(UEBERSICHT_ERSTE_ZEILE, 1,
                 value="Nichts zu melden: kein Rückstand und keine Fehlmenge im Vorschauzeitraum. / "
                       "Bildirilecek bir şey yok.").font = _schrift(10, _GRUEN, italic=True)
     zeilen_je_artikel = {}
     letzte_spalte = len(UEBERSICHT_SPALTEN)
-    for k, r in enumerate(a.itertuples(index=False)):
+    s_status = _U_SPALTE["Gedeckt bis {wochen} Wo.?"]
+    i = UEBERSICHT_ERSTE_ZEILE
+    gruppe_aktuell = None
+    for r in a.itertuples(index=False):
         werte = {c: r[a.columns.get_loc(c)] for c in a.columns}
         norm = werte["Norm-Nr"]
-        i = UEBERSICHT_ERSTE_ZEILE + k * ZEILEN_JE_ARTIKEL
+        gruppe = int(werte["Gruppe"])
+        if gruppe != gruppe_aktuell:
+            # neuer Dringlichkeits-Block: Abstand + Ueberschrift
+            if gruppe_aktuell is not None:
+                ws.row_dimensions[i].height = 10
+                i += 1
+            _gruppen_zeile(ws, i, gruppe, int((a["Gruppe"] == gruppe).sum()), bericht)
+            gruppe_aktuell = gruppe
+            i += 1
         unten = i + ZEILEN_JE_ARTIKEL - 1
         zeilen_je_artikel[norm] = i
         n = notizen.get(norm, {})
-        aeltester = werte.get("Ältester Liefertermin")
         inhalt = [
             ("Nr.", werte["Rang"], None, _schrift(9, _TEXT_HELL), "center"),
             ("Details", "👁 Details", None, _schrift(9, _LINK, True), "center"),
@@ -1157,9 +1242,6 @@ def _schreibe_uebersicht(ws, bericht: dict, notizen: dict) -> dict:
             ("Bestand (nutzbar)", werte["Bestand"], _MENGE_NULL, _schrift(11, _TEXT), "right"),
             ("Rückstand + {tage} Tage", werte["Bedarf bis Reaktionszeit"], _MENGE, _schrift(11, _TEXT, True), "right"),
             ("Unterwegs", werte["Unterwegs"], _MENGE, _schrift(11, _BLAU, True), "right"),
-            ("Ältester Abruf (Liefertermin)", _datum_wert(aeltester), _DATUM,
-             _schrift(10, _ROT if pd.notna(aeltester) and aeltester < st else _TEXT,
-                      bool(pd.notna(aeltester) and aeltester < st)), "center"),
             ("Notiz Dispo", n.get("dispo") or None, None, _schrift(9, _DISPO_TEXT), "left"),
             ("Notiz Produktion", n.get("produktion") or None, None, _schrift(9, _PROD_TEXT), "left"),
         ]
@@ -1182,23 +1264,36 @@ def _schreibe_uebersicht(ws, bericht: dict, notizen: dict) -> dict:
                       Border(left=_WEISS_DICK, right=_WEISS_DICK, top=_WEISS_DICK, bottom=_WEISS_DICK), bis_zeile=unten)
         knopf.font = _schrift(9, _LINK, True)
         # Status (Ja/Nein) als Etikett ueber die drei Zeilen
-        status = _zusammen(ws, i, _U_SPALTE["Gedeckt bis {wochen} Wo.?"], _U_SPALTE["Gedeckt bis {wochen} Wo.?"],
-                           None, bis_zeile=unten)
+        status = _zusammen(ws, i, s_status, s_status, None, bis_zeile=unten)
         _status_etikett(status, bool(werte["Gedeckt"]))
-        _stil_bereich(ws, i, status.column, status.column,
+        _stil_bereich(ws, i, s_status, s_status,
                       _fuellung(STUFEN[5]["fill"] if werte["Gedeckt"] else STUFEN[1]["fill"]),
                       Border(left=_WEISS_DICK, right=_WEISS_DICK, top=_WEISS_DICK, bottom=_WEISS_DICK), bis_zeile=unten)
+        # Aeltester Abruf ohne Ware: Liefertermin (gross), darunter klein das Ladedatum -
+        # rot im Block Rueckstand (Ladedatum bis Stichtag)
+        termin, ladedatum = werte.get("Abruf ohne Ware"), werte.get("Erster Engpass")
+        if termin is not None and pd.notna(termin):
+            rueckstand = gruppe == 1
+            c = ws.cell(i + 1, U_TERMIN, value=_datum_wert(termin))
+            c.number_format = _DATUM
+            c.font = _schrift(11, _ROT if rueckstand else _TEXT, True)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            if ladedatum is not None and pd.notna(ladedatum):
+                c = ws.cell(i + 2, U_TERMIN, value=f"Ladedatum · Yükleme {pd.Timestamp(ladedatum):%d.%m.}")
+                c.font = _schrift(8, _ROT if rueckstand else _TEXT_HELL)
+                c.alignment = Alignment(horizontal="center", vertical="top")
         # NRI-Liste untereinander
         for j, text in enumerate(_nri_zeilen(unterwegs[unterwegs["Norm-Nr"] == norm])):
             c = ws.cell(i + j, U_NRI, value=text)
             c.font = _schrift(9, _TEXT_HELL if text.startswith("+") else _BLAU)
-            c.alignment = Alignment(vertical="center", indent=1)
+            c.alignment = Alignment(vertical="center", indent=2)
         # Trennlinie unter dem Artikel, feste Zeilenhoehe
         for zeile in range(i, unten + 1):
             ws.row_dimensions[zeile].height = _U_ZEILENHOEHE
         for s in range(1, letzte_spalte + 1):
-            if s not in (U_DETAILS, status.column, U_NOTIZ_DISPO, U_NOTIZ_PROD):
+            if s not in (U_DETAILS, s_status, U_NOTIZ_DISPO, U_NOTIZ_PROD):
                 ws.cell(unten, s).border = _UNTEN
+        i = unten + 1
     ws.freeze_panes = f"D{UEBERSICHT_ERSTE_ZEILE}"   # Kopf + Nr./Details/Norm-Nr bleiben stehen
     _druck(ws, UEBERSICHT_KOPFZEILE)
     return zeilen_je_artikel
@@ -1491,25 +1586,34 @@ def _schreibe_details(ws, ws_daten, bericht: dict, uebersicht_zeilen: dict, spra
         if zeile > ERSTE_ZEILE:
             ws.row_breaks.append(Break(id=zeile - 1))   # Druck: jede Karte auf einer neuen Seite
 
-        # Titelleiste: Akzentstreifen, Nr. + Norm-Nr gross, VW-Nr + Bezeichnung, Status, Link zurueck
-        ws.cell(zeile, 1).fill = _fuellung(STUFEN[5]["balken"] if gedeckt else STUFEN[1]["balken"])
-        titel = _zusammen(ws, zeile, _D_ERSTE, 10, _reich(
+        # Titelleiste: Akzentstreifen (Farbe des Dringlichkeits-Blocks), Nr. + Norm-Nr gross,
+        # VW-Nr + Bezeichnung, Block (Rueckstand / Engpass / langfristig), Status, Link zurueck
+        gruppe = GRUPPEN[int(werte["Gruppe"])]
+        farben = STUFEN[gruppe["stufe"]]
+        ws.cell(zeile, 1).fill = _fuellung(farben["balken"])
+        titel = _zusammen(ws, zeile, _D_ERSTE, 8, _reich(
             (f"{werte['Rang']}.  {norm}", _inline(15, _TEXT, True)),
             (f"     VW {werte['VW-Nr']}" if werte["VW-Nr"] else "", _inline(11, _TEXT_MITTEL, True)),
             (f"     {werte['Kurztext']}" if werte["Kurztext"] else "", _inline(10, _TEXT_HELL)),
         ))
         titel.alignment = Alignment(vertical="center", indent=1)
-        etikett = _zusammen(ws, zeile, 11, 13)
+        block = _zusammen(ws, zeile, 9, 11, f"{gruppe['kurz_de'].format(tage=rt, wochen=wo)}  ·  "
+                                            f"{gruppe['kurz_tr'].format(tage=rt, wochen=wo)}")
+        block.font = _schrift(10, farben["font"], True)
+        block.alignment = Alignment(horizontal="center", vertical="center")
+        _stil_bereich(ws, zeile, 9, 11, _fuellung(farben["fill"]))
+        etikett = _zusammen(ws, zeile, 12, 14)
         _status_etikett(etikett, gedeckt, 10,
                         f"Gedeckt bis {wo} Wo.: Ja / Evet" if gedeckt else f"Gedeckt bis {wo} Wo.: Nein / Hayır")
-        _stil_bereich(ws, zeile, 11, 13, _fuellung(STUFEN[5]["fill"] if gedeckt else STUFEN[1]["fill"]))
+        _stil_bereich(ws, zeile, 12, 14, _fuellung(STUFEN[5]["fill"] if gedeckt else STUFEN[1]["fill"]))
         if u_zeile:
-            link = _zusammen(ws, zeile, 14, 15, "↑ Übersicht / Özet")
+            link = ws.cell(zeile, 15, value="↑ Übersicht")
             link.hyperlink = Hyperlink(ref=link.coordinate, location=f"'{BLATT_UEBERSICHT}'!A{u_zeile}")
             link.font = _schrift(9, _LINK, underline="single")
             link.alignment = Alignment(horizontal="right", vertical="center")
-        _stil_bereich(ws, zeile, 1, _D_LETZTE, rahmen=Border(top=Side(style="medium", color=_TEXT),
-                                                             bottom=_LINIE_DUENN))
+        for spalte in range(1, _D_LETZTE + 1):   # Linie oben/unten; der weisse Abstand zwischen den Etiketten bleibt
+            ws.cell(zeile, spalte).border = Border(top=Side(style="medium", color=_TEXT), bottom=_LINIE_DUENN,
+                                                   left=_WEISS_DICK if spalte == 12 else None)
         ws.row_dimensions[zeile].height = 30
 
         # Notizen (Spiegel der Uebersicht; hier Getipptes wird auch uebernommen)
@@ -1643,7 +1747,7 @@ def _schreibe_wochen(ws, bericht: dict) -> None:
     _druck(ws)
 
 
-def _schreibe_unterwegs(ws, bericht: dict, sprache: str) -> None:
+def _schreibe_unterwegs(ws, bericht: dict, sprache: str, uebersicht_zeilen: dict | None = None) -> None:
     u, a, st = bericht["alle_zugaenge"], bericht["artikel"], bericht["stichtag"]
     stamm = bericht["stammdaten"]
     t = TEXTE[sprache]
@@ -1678,8 +1782,8 @@ def _schreibe_unterwegs(ws, bericht: dict, sprache: str) -> None:
             ws.cell(zeile, 5).font = _schrift(9, _ROT)
         if norm in rang:
             zelle = ws.cell(zeile, 10)
-            zelle.hyperlink = Hyperlink(ref=zelle.coordinate,
-                                        location=f"'{BLATT_UEBERSICHT}'!A{UEBERSICHT_ERSTE_ZEILE + (rang[norm] - 1) * ZEILEN_JE_ARTIKEL}")
+            ziel = (uebersicht_zeilen or {}).get(norm, UEBERSICHT_ERSTE_ZEILE)
+            zelle.hyperlink = Hyperlink(ref=zelle.coordinate, location=f"'{BLATT_UEBERSICHT}'!A{ziel}")
             zelle.font = _schrift(9, _LINK, underline="single")
             zelle.alignment = Alignment(horizontal="center")
         zeile += 1
@@ -1727,7 +1831,7 @@ def erstelle_bericht_datei(bericht: dict, notizen: dict | None = None, sprache: 
                 zelle = ws_u.cell(zeile, spalte)
                 zelle.hyperlink = Hyperlink(ref=zelle.coordinate, location=f"'{BLATT_DETAILS}'!A{ziel}")
     _schreibe_wochen(ws_w, bericht)
-    _schreibe_unterwegs(ws_n, bericht, sprache)
+    _schreibe_unterwegs(ws_n, bericht, sprache, uebersicht_zeilen)
 
     archiv = {n: e for n, e in notizen.items() if n not in uebersicht_zeilen}
     if archiv:
@@ -1753,6 +1857,8 @@ def kennzahlen(bericht: dict) -> dict:
         "artikel": len(a),
         "je_stufe": {s: d["je_stufe"][s]["anzahl"] for s in STUFEN},
         "menge_je_stufe": {s: d["je_stufe"][s]["menge"] for s in STUFEN},
+        "je_gruppe": d["je_gruppe"],
+        "handlungsbedarf": d["handlungsbedarf"],
         "nri": d["nri"],
         "nri_bericht": d["nri_bericht"],
         "unterwegs_menge": d["unterwegs_menge"],

@@ -77,12 +77,17 @@ def test_spaet_plus_fehlt_ist_fehlmenge_aus_logic(beispiel):
     assert ((alle["Rechtzeitig"] + alle["Spaet"] + alle["Fehlt"]) - alle["Offen"]).abs().max() == 0
 
 
-def test_reihenfolge_rueckstand_fehlt_vor_unterwegs_vor_engpass(beispiel):
+def test_reihenfolge_rueckstand_vor_engpass_aeltester_termin_zuerst(beispiel):
     _, _, bericht = beispiel
     a = bericht["artikel"]
-    assert list(a["Norm-Nr"]) == [B, A, C]       # D voll gedeckt -> nicht im Bericht
-    assert list(a["Stufe"]) == [1, 2, 3]
+    # Block Rueckstand: A (Termin 08.11., Ware erst mit NRI am 13.11.) vor B (Termin 11.11., nichts da);
+    # dann C (Engpass in 5 Tagen). D voll gedeckt -> nicht im Bericht.
+    assert list(a["Norm-Nr"]) == [A, B, C]
+    assert list(a["Gruppe"]) == [1, 1, 2]
+    assert list(a["Stufe"]) == [2, 1, 3]
     assert list(a["Rang"]) == [1, 2, 3]
+    assert list(a["Abruf ohne Ware"]) == [ST - pd.Timedelta(days=3), ST, ST + pd.Timedelta(days=7)]
+    assert list(a["Erster Engpass"]) == [ST - pd.Timedelta(days=5), ST - pd.Timedelta(days=2), ST + pd.Timedelta(days=5)]
     zeile_a = a.set_index("Norm-Nr").loc[A]
     assert zeile_a["Rückstand später"] == 50 and zeile_a["Kurz später"] == 100 and zeile_a["Später fehlt"] == 200
 
@@ -186,11 +191,16 @@ def test_datei_blaetter_kacheln_und_kurzuebersicht(beispiel):
     assert kopfzeile[pb.U_NOTIZ_PROD - 1].startswith("Notiz Produktion\nÜretim notu")
     assert kopfzeile[pb.U_DETAILS - 1].startswith("Details")
     assert any(k.startswith("Gedeckt bis 22 Wo.?") for k in kopfzeile)          # der eine Status
-    assert any(k.startswith("Ältester Abruf (Liefertermin)") for k in kopfzeile)
+    assert any(k.startswith("Ältester Abruf ohne Ware (Liefertermin)") for k in kopfzeile)
     assert not any(k.startswith(("Dringlichkeit", "Bezeichnung", "Ø", "Reichweite")) for k in kopfzeile)
-    # je Artikel drei Zeilen, dringendste zuerst
-    assert list(zeilen) == [B, A, C]
-    assert [zeilen[B], zeilen[A], zeilen[C]] == [pb.UEBERSICHT_ERSTE_ZEILE + k * pb.ZEILEN_JE_ARTIKEL for k in range(3)]
+    # Bloecke nach Dringlichkeit mit Ueberschrift, je Artikel drei Zeilen, aeltester Termin zuerst
+    erste = pb.UEBERSICHT_ERSTE_ZEILE
+    assert str(ws.cell(erste, 1).value).startswith("Rückstand – Termin überschritten")
+    assert list(zeilen) == [A, B, C]
+    assert [zeilen[A], zeilen[B]] == [erste + 1, erste + 1 + pb.ZEILEN_JE_ARTIKEL]
+    block2 = erste + 1 + 2 * pb.ZEILEN_JE_ARTIKEL + 1                          # eine Leerzeile Abstand
+    assert str(ws.cell(block2, 1).value).startswith("Engpass in den nächsten 14 Tagen")
+    assert zeilen[C] == block2 + 1
     spalte = {name: i for i, (name, _, _) in enumerate(pb.UEBERSICHT_SPALTEN, start=1)}
     za = zeilen[A]
     assert ws.cell(za, spalte["Bestand (nutzbar)"]).value == 100
@@ -199,17 +209,22 @@ def test_datei_blaetter_kacheln_und_kurzuebersicht(beispiel):
     assert ws.cell(za, pb.U_NRI).value == "NRI-DEMO-1  ·  13.11.  ·  50"         # NRI untereinander, nach Ankunft
     assert ws.cell(za + 1, pb.U_NRI).value == "NRI-DEMO-2  ·  11.12.  ·  100"
     assert ws.cell(za, spalte["Gedeckt bis {wochen} Wo.?"]).value == "Nein / Hayır"
-    assert ws.cell(za, spalte["Ältester Abruf (Liefertermin)"]).value == (ST - pd.Timedelta(days=3)).to_pydatetime()
+    # aeltester Abruf ohne Ware: Liefertermin, darunter das Ladedatum
+    assert ws.cell(za + 1, pb.U_TERMIN).value == (ST - pd.Timedelta(days=3)).to_pydatetime()
+    assert ws.cell(za + 2, pb.U_TERMIN).value == f"Ladedatum · Yükleme {ST - pd.Timedelta(days=5):%d.%m.}"
+    assert ws.cell(za + 1, pb.U_TERMIN).font.color.rgb.endswith("DC2626")          # Rueckstand: rot
     assert f"K{za}:K{za + 2}" in {str(m) for m in ws.merged_cells.ranges}           # Notiz ueber drei Zeilen
     # 👁 Details und Norm-Nr fuehren zur Detailkarte
     assert ws.cell(zeilen[B], pb.U_DETAILS).value == "👁 Details"
     for s in (pb.U_DETAILS, pb.U_NORM):
         assert ws.cell(zeilen[B], s).hyperlink.location.startswith(f"'{pb.BLATT_DETAILS}'!A")
-    # Kacheln: Handlungsbedarf, Fehlt gesamt, Rueckstand + 14 Tage, Unterwegs, gedeckt
-    assert str(ws.cell(4, 1).value).startswith("Handlungsbedarf") and ws.cell(5, 1).value == 3
-    assert ws.cell(5, 4).value == 340
-    assert ws.cell(5, 6).value == 80 + 250 + 60
-    assert ws.cell(5, 8).value == 150 and ws.cell(5, 9).value == 0
+    # Kacheln: die drei Bloecke, Handlungsbedarf, Unterwegs
+    assert str(ws.cell(4, 1).value).startswith("Rückstand – Termin überschritten") and ws.cell(5, 1).value == 2
+    assert str(ws.cell(4, 4).value).startswith("Engpass") and ws.cell(5, 4).value == 1
+    assert str(ws.cell(4, 6).value).startswith("Langfristig") and ws.cell(5, 6).value == 0
+    assert str(ws.cell(4, 8).value).startswith("Handlungsbedarf") and ws.cell(5, 8).value == 3
+    assert "fehlt gesamt 340" in ws.cell(6, 8).value
+    assert ws.cell(5, 9).value == 150
     assert len(ws._charts) == 0
     assert ws.freeze_panes == f"D{pb.UEBERSICHT_ERSTE_ZEILE}"
     assert ws.sheet_view.showGridLines is False
@@ -231,17 +246,18 @@ def test_detailkarte_kennzahlen_zwei_diagramme_und_abrufe(beispiel):
     _, wb = _excel(bericht, {A: {"dispo": "Kunde akzeptiert 20.11.", "produktion": ""}}, "DE")
     ws = wb[pb.BLATT_DETAILS]
     titel = _karten(ws)
-    assert list(titel) == [B, A, C]
+    assert list(titel) == [A, B, C]
     t = titel[A]
-    assert str(ws.cell(t, 2).value).startswith("2.  900000001")
-    assert ws.cell(t, 11).value == "Gedeckt bis 22 Wo.: Nein / Hayır"
-    assert ws.cell(t, 14).hyperlink.location.startswith(f"'{pb.BLATT_UEBERSICHT}'!A")
+    assert str(ws.cell(t, 2).value).startswith("1.  900000001")
+    assert ws.cell(t, 9).value == "Rückstand  ·  Gecikme"                           # Dringlichkeits-Block
+    assert ws.cell(t, 12).value == "Gedeckt bis 22 Wo.: Nein / Hayır"
+    assert ws.cell(t, 15).hyperlink.location.startswith(f"'{pb.BLATT_UEBERSICHT}'!A")
     spiegel = ws.cell(t + 1, pb.DETAIL_NOTIZ_DISPO).value
     assert spiegel.startswith("=IF(") and pb.BLATT_UEBERSICHT in spiegel
     # zwei Diagramme je Artikel, fest in ihren Zellbereich gelegt (kein Ueberlappen)
     assert len(ws._charts) == 6
     karte_a = sorted((c.anchor._from.row + 1, c.anchor.to.row) for c in ws._charts
-                     if titel[A] < c.anchor._from.row + 1 < titel[C])
+                     if titel[A] < c.anchor._from.row + 1 < titel[B])
     assert karte_a[0] == (t + 8, t + 7 + pb.DIAGRAMM_ZEILEN)
     assert karte_a[1][0] > karte_a[0][1] + 1
     assert all(c.anchor.to.col == pb._D_DIAGRAMM_BIS for c in ws._charts)           # endet vor der Tabelle rechts
@@ -255,30 +271,30 @@ def test_detailkarte_kennzahlen_zwei_diagramme_und_abrufe(beispiel):
     assert kacheln["Erster Fehltag"] == "sofort / hemen"
     # rechts neben der Prognose: Bestand, NRI, Abrufe der naechsten 4 Wochen
     k, n, o = pb._D_PANEL, pb._D_PANEL + 3, pb._D_PANEL + 4
-    verf = _zeile_mit(ws, k, "Verfügbar gesamt", t, titel[C])
+    verf = _zeile_mit(ws, k, "Verfügbar gesamt", t, titel[B])
     assert ws.cell(verf, n).value == 250
     assert ws.cell(_zeile_mit(ws, k, "NRI-DEMO-1", t, verf), n).value == 50
-    kopf = _zeile_mit(ws, k, "Ladedatum", verf, titel[C])
+    kopf = _zeile_mit(ws, k, "Ladedatum", verf, titel[B])
     assert [ws.cell(kopf + i, n).value for i in (1, 2)] == [150, 100]               # Rueckstand, dann in 3 Tagen
     assert [ws.cell(kopf + i, o).value for i in (1, 2)] == [100, 0]                 # Rest
     assert ws.cell(kopf + 1, k).value == "sofort / hemen"
-    summe = _zeile_mit(ws, k, "Summe 4 Wo.", kopf, titel[C])
+    summe = _zeile_mit(ws, k, "Summe 4 Wo.", kopf, titel[B])
     assert ws.cell(summe, k + 1).value.startswith("✓ gedeckt")
     assert ws.cell(summe, n).font.color.rgb.endswith("15803D")                       # gruen
     # B: nichts da -> ab der ersten Zeile rot, Summe rot "fehlt"
     tb = titel[B]
-    kopf_b = _zeile_mit(ws, k, "Ladedatum", tb, titel[A])
+    kopf_b = _zeile_mit(ws, k, "Ladedatum", tb, titel[C])
     assert ws.cell(kopf_b + 1, n).font.color.rgb.endswith("DC2626")
-    summe_b = _zeile_mit(ws, k, "Summe 4 Wo.", kopf_b, titel[A])
+    summe_b = _zeile_mit(ws, k, "Summe 4 Wo.", kopf_b, titel[C])
     assert ws.cell(summe_b, k + 1).value == "✗ fehlt / eksik 80"
     # Bedarf je Kunde unter den Diagrammen
-    kunde = _zeile_mit(ws, 2, "DEMO Kunde Nord", t, titel[C])
+    kunde = _zeile_mit(ws, 2, "DEMO Kunde Nord", t, titel[B])
     assert ws.cell(kunde, 5).value == pytest.approx(250 / 450)
     # Diagrammdaten: je Woche, Achsenpunkte in der gewaehlten Sprache
     wd = wb[pb.BLATT_DATEN]
     werte_a = [wd.cell(r, 1).value for r in range(1, wd.max_row + 1)]
     assert "Bestand" in werte_a and "Rückst." in werte_a and f"KW {ST.isocalendar()[1]}" in werte_a
-    assert sorted(b.id for b in ws.row_breaks.brk) == [titel[A] - 1, titel[C] - 1]
+    assert sorted(b.id for b in ws.row_breaks.brk) == [titel[B] - 1, titel[C] - 1]
 
 
 def test_vorschlag_eingabefelder_und_formeln(beispiel):
@@ -346,13 +362,19 @@ def test_vw_nr_einheitlich_und_aus_der_artikelliste():
     assert pb.vw_nr(999999999, "", "-WHT-009-642") == "WHT 009 642"              # sonst Kundenmaterial
 
 
-def test_handlungsbedarf_zuerst():
-    # D: Rueckstand kommt nur spaeter (gedeckt), E: Engpass in 5 Tagen ohne Ware -> E zuerst
-    bedarf = _bedarf([(D, -2, 50, "11", "X"), (E, 5, 40, "11", "Y")])
-    _, _, bericht = _rechnen(bedarf, {D: 0, E: 0}, [(D, 3, 50, "NRI-DEMO-7")])
+def test_rueckstand_vor_engpass_und_ware_im_lager_zaehlt_nicht():
+    # D: Termin ueberschritten, Ware kommt erst in 3 Tagen (gedeckt, aber zu spaet) -> Block Rueckstand
+    # E: Engpass in 5 Tagen ohne Ware (nicht gedeckt)                         -> danach
+    # F: ueberfaelliger Abruf, Ware liegt bei uns (nur nicht versendet) -> kein Rueckstand fuer die
+    #    Produktion; massgeblich ist sein Engpass in 10 Tagen               -> Block Engpass, nach E
+    F = 900000006
+    bedarf = _bedarf([(D, -2, 50, "11", "X"), (E, 5, 40, "11", "Y"), (F, -4, 30, "11", "Z"), (F, 10, 30, "11", "Z")])
+    _, _, bericht = _rechnen(bedarf, {D: 0, E: 0, F: 30}, [(D, 3, 50, "NRI-DEMO-7")])
     a = bericht["artikel"]
-    assert list(a["Norm-Nr"]) == [E, D]
-    assert list(a["Gedeckt"]) == [False, True] and list(a["Stufe"]) == [3, 2]
+    assert list(a["Norm-Nr"]) == [D, E, F]
+    assert list(a["Gruppe"]) == [1, 2, 2]
+    assert list(a["Gedeckt"]) == [True, False, False]
+    assert a.set_index("Norm-Nr").loc[F, "Abruf ohne Ware"] == ST + pd.Timedelta(days=12)   # Liefertermin = Ladedatum + 2
 
 
 def test_vorschlag_deckt_fehlmenge_zum_bedarfstermin(beispiel):
@@ -420,7 +442,7 @@ def test_unterwegs_listet_alle_zugaenge_mit_link(beispiel):
     zeilen = {ws.cell(r, 1).value: r for r in range(pb.ERSTE_ZEILE, ws.max_row + 1)}
     assert set(zeilen) == {"NRI-DEMO-1", "NRI-DEMO-2", "NRI-DEMO-9"}
     link = ws.cell(zeilen["NRI-DEMO-1"], 10).hyperlink.location
-    assert link == f"'{pb.BLATT_UEBERSICHT}'!A{pb.UEBERSICHT_ERSTE_ZEILE + pb.ZEILEN_JE_ARTIKEL}"   # A hat Rang 2
+    assert link == f"'{pb.BLATT_UEBERSICHT}'!A{pb.UEBERSICHT_ERSTE_ZEILE + 1}"   # A steht als erster Artikel im Block
     assert ws.cell(zeilen["NRI-DEMO-9"], 10).value is None
 
 

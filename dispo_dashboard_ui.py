@@ -1069,10 +1069,17 @@ def _render_positionsliste_alt(positionen: pd.DataFrame) -> None:
 
 
 _BERICHT_VORSCHAU_SPALTEN = {
-    "Rang": "Nr.", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr", "Bestand": "Bestand (nutzbar)",
-    "Bedarf bis Reaktionszeit": "Rückstand + Reaktionszeit", "Unterwegs": "Unterwegs", "NRI": "NRI · Ankunft · Menge",
-    "Gedeckt_Text": "Gedeckt bis Horizont?", "Ältester Liefertermin": "Ältester Abruf (Liefertermin)",
+    "Rang": "Nr.", "Gruppe_Text": "Dringlichkeit", "Norm-Nr": "Norm-Nr", "VW-Nr": "VW-Nr",
+    "Bestand": "Bestand (nutzbar)", "Bedarf bis Reaktionszeit": "Rückstand + Reaktionszeit", "Unterwegs": "Unterwegs",
+    "NRI": "NRI · Ankunft · Menge", "Gedeckt_Text": "Gedeckt bis Horizont?",
+    "Abruf ohne Ware": "Ältester Abruf ohne Ware (Liefertermin)", "Erster Engpass": "Ladedatum",
 }
+_GRUPPE_SYMBOL = {1: "🔴", 2: "🟠", 3: "🔵", 4: "🟢"}
+
+
+def _gruppe_text(gruppe, reaktion: int, wochen: int) -> str:
+    g = produktionsbericht.GRUPPEN[int(gruppe)]
+    return f"{_GRUPPE_SYMBOL[int(gruppe)]} {g['kurz_de'].format(tage=reaktion, wochen=wochen)}"
 
 
 def _prognose_diagramm(verlauf: dict, stichtag: pd.Timestamp, titel: str, hoehe: int = 260) -> alt.LayerChart:
@@ -1137,11 +1144,15 @@ def _render_artikel_karte(bericht: dict, gewaehlt: pd.Series, reaktion: int, woc
         return
     basis, stichtag = bericht["basis"], bericht["stichtag"]
     gedeckt = bool(gewaehlt["Gedeckt"])
-    farbe = produktionsbericht.STUFEN[5 if gedeckt else 1]
+    gruppe = produktionsbericht.GRUPPEN[int(gewaehlt["Gruppe"])]
+    etiketten = [
+        (produktionsbericht.STUFEN[gruppe["stufe"]], gruppe["kurz_de"].format(tage=reaktion, wochen=wochen)),
+        (produktionsbericht.STUFEN[5 if gedeckt else 1], f"Gedeckt bis {wochen} Wo.: {'Ja' if gedeckt else 'Nein'}"),
+    ]
     st.markdown(
-        f"### {gewaehlt['Rang']}. {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}"
-        f"  <span style='background:#{farbe['fill']};color:#{farbe['font']};padding:2px 10px;border-radius:10px;"
-        f"font-size:0.8rem;font-weight:600'>Gedeckt bis {wochen} Wo.: {'Ja' if gedeckt else 'Nein'}</span>",
+        f"### {gewaehlt['Rang']}. {_artikel_label(norm_nr, gewaehlt['VW-Nr'])}  " + " ".join(
+            f"<span style='background:#{f['fill']};color:#{f['font']};padding:2px 10px;border-radius:10px;"
+            f"font-size:0.8rem;font-weight:600'>{text}</span>" for f, text in etiketten),
         unsafe_allow_html=True,
     )
     if gewaehlt["Kurztext"]:
@@ -1246,16 +1257,23 @@ def _render_bericht_vorschau(bericht: dict, reaktion: int, wochen: int) -> None:
     unterwegs = bericht["unterwegs"]
     vorschau["NRI"] = [" | ".join(produktionsbericht._nri_zeilen(unterwegs[unterwegs["Norm-Nr"] == n], 99))
                        for n in vorschau["Norm-Nr"]]
-    vorschau["Gedeckt_Text"] = vorschau["Gedeckt"].map(lambda g: "🟢 Ja" if g else "🔴 Nein")
+    vorschau["Gedeckt_Text"] = vorschau["Gedeckt"].map(lambda g: "Ja" if g else "Nein")
+    vorschau["Gruppe_Text"] = vorschau["Gruppe"].map(lambda g: _gruppe_text(g, reaktion, wochen))
     vorschau = vorschau[list(_BERICHT_VORSCHAU_SPALTEN)].rename(columns=_BERICHT_VORSCHAU_SPALTEN)
     anzeige = vorschau.copy()
     for s in ("Bestand (nutzbar)", "Rückstand + Reaktionszeit", "Unterwegs"):
         anzeige[s] = anzeige[s].apply(lambda w: "" if not w else _fmt_menge(w))
-    anzeige["Ältester Abruf (Liefertermin)"] = anzeige["Ältester Abruf (Liefertermin)"].apply(_fmt_datum)
+    for s in ("Ältester Abruf ohne Ware (Liefertermin)", "Ladedatum"):
+        anzeige[s] = anzeige[s].apply(_fmt_datum)
     anzeige = anzeige.rename(columns={"Rückstand + Reaktionszeit": f"Rückstand + {reaktion} Tage",
                                       "Gedeckt bis Horizont?": f"Gedeckt bis {wochen} Wo.?"})
-    st.caption("👁 Artikel anklicken → Detailkarte mit Prognose, NRI und Abrufen der nächsten 4 Wochen und "
-               "einstellbarem Wareneingang (wie in der Excel-Datei). Bestand = nur nutzbare Menge (volle KLT je Charge).")
+    st.caption(
+        "Reihenfolge = Dringlichkeit: 🔴 Rückstand (Ladedatum bis Stichtag, Ware fehlt oder kommt zu spät) → "
+        f"🟠 Engpass in den nächsten {reaktion} Tagen → 🔵 langfristig; im Block ältester Liefertermin zuerst. "
+        "„Abruf ohne Ware“ = ältester offener Abruf, den wir nicht rechtzeitig aus Bestand oder Zugang liefern können – "
+        "Abrufe, für die Ware bei uns liegt, zählen nicht. Bestand = nur nutzbare Menge (volle KLT je Charge). "
+        "👁 Artikel anklicken → Detailkarte wie in der Excel-Datei."
+    )
     auswahl = st.dataframe(
         anzeige, hide_index=True, use_container_width=True,
         on_select="rerun", selection_mode="single-row",
@@ -1311,17 +1329,20 @@ def _render_export_tab(daten: dict) -> None:
         bestand_je_charge=daten.get("bestand_je_charge"),
     )
     kz = produktionsbericht.kennzahlen(bericht)
-    artikel_b = bericht["artikel"]
-    offen = int((~artikel_b["Gedeckt"].astype(bool)).sum()) if not artikel_b.empty else 0
-    kurz = float(artikel_b["Bedarf bis Reaktionszeit"].sum()) if not artikel_b.empty else 0.0
+    je_gruppe = kz["je_gruppe"]
+    grenze = stichtag + pd.Timedelta(days=reaktion)
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric(f"Handlungsbedarf (nicht gedeckt bis {wochen} Wo.)", offen, f"von {kz['artikel']} Artikeln",
+    m1.metric("🔴 Rückstand – Termin überschritten", je_gruppe[1], f"Ladedatum bis {stichtag:%d.%m.}",
+              delta_color="off", delta_arrow="off",
+              help="Artikel mit einem überfälligen Abruf, für den die Ware fehlt oder noch unterwegs ist.")
+    m2.metric(f"🟠 Engpass nächste {reaktion} Tage", je_gruppe[2], f"Ladedatum bis {grenze:%d.%m.}",
               delta_color="off", delta_arrow="off")
-    m2.metric("Fehlt gesamt", _fmt_menge(kz["fehlt_gesamt"]), "Stück aus der Türkei", delta_color="off", delta_arrow="off")
-    m3.metric(f"Rückstand + {reaktion} Tage", _fmt_menge(kurz), "Stück Bedarf", delta_color="off", delta_arrow="off")
-    m4.metric("Unterwegs (NRI)", _fmt_menge(kz["unterwegs_menge"]), f"{kz['nri_bericht']} NRI",
+    m3.metric(f"🔵 Langfristig bis {wochen} Wo.", je_gruppe[3], f"bis {bericht['horizont']:%d.%m.%Y}",
               delta_color="off", delta_arrow="off")
-    m5.metric(f"Gedeckt bis {wochen} Wo.", kz["artikel"] - offen, "kein Handlungsbedarf",
+    m4.metric("Handlungsbedarf (nicht gedeckt)", kz["handlungsbedarf"],
+              f"fehlt gesamt {_fmt_menge(kz['fehlt_gesamt'])} Stk", delta_color="off", delta_arrow="off",
+              help=f"Bestand + unterwegs reichen nicht für alle Abrufe bis {wochen} Wochen – muss aus der Türkei kommen.")
+    m5.metric("Unterwegs (NRI)", _fmt_menge(kz["unterwegs_menge"]), f"{kz['nri_bericht']} NRI",
               delta_color="off", delta_arrow="off")
 
     letztes = positionen["Ladedatum"].max() if not positionen.empty else pd.NaT

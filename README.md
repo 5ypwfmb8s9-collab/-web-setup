@@ -132,14 +132,19 @@ Produktion in der Türkei schickt (`produktionsbericht.py`). Spaltenköpfe und
 Stufen stehen zweisprachig (DE/TR), die Hinweistexte wahlweise Türkisch oder
 Deutsch.
 
-- **Übersicht** – schlank: oben sechs Kacheln (Fehlt gesamt, Artikel je
-  Dringlichkeit mit Stückzahlen, Unterwegs/NRI), darunter eine Zeile je
-  Artikel, dringendste zuerst: 1 Rückstand fehlt → 2 Rückstand unterwegs →
-  3 Engpass in der Reaktionszeit der Türkei (Standard 14 Tage) → 4 später
-  (Standard bis 22 Wochen). Nur Bestand, Unterwegs, Rückstand, Fehlmengen,
-  erster Engpass und die Notizspalten für Dispo (blau) und Produktion
-  (orange) – keine Bezeichnung, kein Ø. „Fehlt“ = weder bei uns noch
-  unterwegs. Klick auf die Norm-Nr → Detailkarte.
+- **Übersicht** – Kurzübersicht in Blöcken nach Dringlichkeit:
+  🔴 Rückstand (Ladedatum bis Stichtag, Termin überschritten) → 🟠 Engpass in
+  der Reaktionszeit der Türkei (Standard 14 Tage) → 🔵 langfristig (Standard
+  bis 22 Wochen); im Block ältester Liefertermin zuerst. Maßgeblich ist der
+  älteste Abruf **ohne Ware** – ein Abruf, den wir nicht rechtzeitig aus
+  nutzbarem Bestand oder einem rechtzeitigen Zugang liefern können; Abrufe,
+  für die die Ware bei uns liegt, zählen nicht. Je Artikel drei Zeilen:
+  👁 Details (Link), Norm-Nr, VW-Nr, Bestand (nur nutzbar: volle KLT je
+  Charge, ohne OUT1), Bedarf Rückstand + Reaktionszeit, Unterwegs mit
+  NRI-Liste, ein Status „gedeckt bis Horizont? Ja/Nein“, ältester Abruf ohne
+  Ware (Liefertermin + Ladedatum) und die Notizspalten Dispo (blau) /
+  Produktion (orange). Oben fünf Kacheln: die drei Blöcke, Handlungsbedarf
+  (nicht gedeckt) und Unterwegs.
 - **Details** – je Artikel eine große Karte: Kennzahlen (Bestand, Unterwegs,
   Fehlt, Ø Bedarf je Woche/Monat, Reichweite, erster Fehltag), dann zwei
   Diagramme:
