@@ -427,10 +427,11 @@ def test_planung_nach_werk_dann_abladestelle(monkeypatch):
 # --- Füllmenge je Abladestelle (Stammdaten Spalte J), Abgleich ohne Gross/Klein -----
 
 def test_fuellmenge_je_abladestelle_aus_stammdaten():
-    # Stammdaten: 970698000 an "cc1" 1.050, "307k2" 1.100, sonst 1.000 (Almanca Hilfsdaten)
+    # Stammdaten: 970698000 an "cc1" 1.050, sonst 1.000 (Almanca Hilfsdaten); 936101000 an KOD72 100 statt 50
     assert pe._fuellmenge(970698000, "CC1") == 1050
     assert pe._fuellmenge(970698000, "cc1") == 1050
-    assert pe._fuellmenge(970698000, "307K2") == 1100
+    assert pe._fuellmenge(970698000, "307K2") == 1000              # Korrektur 17.11. (vorher 1.100)
+    assert pe._fuellmenge(936101000, "KOD72") == 100 and pe._fuellmenge(936101000) == 50
     assert pe._fuellmenge(970698000, "106K4") == 1000
     assert pe._fuellmenge(970698000) == 1000                 # ohne Abladestelle: je Artikel
     assert pe._fuellmenge(970698000, "GIBTSNICHT") == 1000
@@ -459,7 +460,7 @@ def test_planung_rundet_je_abladestelle_und_formel_j():
     inhalt, _, _ = pe.erstelle_planungsdatei(positionen, bestand, _zugang([]), PLANUNG, stichtag=STICHTAG)
     ws = openpyxl.load_workbook(io.BytesIO(inhalt))["Almanca"]
     menge = {ws.cell(r, 3).value: ws.cell(r, 9).value for r in pe._belegte_zeilen(ws)}
-    assert menge == {"CC1": 21000, "106K4": 20000, "307K2": 20900}   # 20 × 1.050, 20 × 1.000, 19 × 1.100
+    assert menge == {"CC1": 21000, "106K4": 20000, "307K2": 20000}   # 20 × 1.050, 20 × 1.000, 20 × 1.000
     zeile = next(r for r in pe._belegte_zeilen(ws) if ws.cell(r, 3).value == "CC1")
     formel = ws.cell(zeile, pe.SPALTE_FUELLMENGE).value
     assert "Stammdaten!$J$2:$J$1733" in formel.text and "Almanca Hilfsdaten" in formel.text
