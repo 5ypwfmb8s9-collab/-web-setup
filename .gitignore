@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.streamlit/secrets.toml
+.reklamationen_basisordner.txt
+.reklamationen_archivordner.txt
+.dispo_sap_ordner.txt
+.dispo_kontakte.json
+.dispo_reichweite.json
+.reklamation_pdf_eintraege.json
+start_log.txt
