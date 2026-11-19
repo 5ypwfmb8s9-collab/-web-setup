@@ -479,3 +479,68 @@ def test_bestand_reicht_bei_verschiedenen_fuellmengen_je_abladestelle(spez):
     begrenzt, zusatz = pe._begrenze_auf_bestand(gerundet, {7: 3000})
     assert list(begrenzt["Abladestelle"]) == ["A"] and begrenzt["Menge"].iloc[0] == 2100
     assert list(zusatz["Abladestelle"]) == ["B"] and zusatz["Offene Menge"].iloc[0] == 1000
+
+
+# --- Eigene Planungsvorlage (Upload) ----------------------------------------------
+
+def _vorlage_mit_fuellmenge(tmp_path, zeile: int, alt: int, neu: int):
+    """Kopie der Standardvorlage, in der genau eine Füllmenge in Stammdaten
+    Spalte J geaendert ist (direkt im XML, wie Excel sie speichert)."""
+    import re
+    import zipfile
+    quelle = zipfile.ZipFile(pe.STANDARD_VORLAGE)
+    wbxml = quelle.read("xl/workbook.xml").decode()
+    rels = quelle.read("xl/_rels/workbook.xml.rels").decode()
+    rid = re.search(r'<sheet [^>]*name="Stammdaten"[^>]*r:id="(rId\d+)"', wbxml).group(1)
+    ziel = re.search(rf'Id="{rid}"[^>]*Target="([^"]+)"', rels) or re.search(rf'Target="([^"]+)"[^>]*Id="{rid}"', rels)
+    blatt = "xl/" + ziel.group(1).lstrip("/").replace("xl/", "")
+    pfad = tmp_path / "vorlage_geaendert.xlsx"
+    with zipfile.ZipFile(pfad, "w", zipfile.ZIP_DEFLATED) as aus:
+        for info in quelle.infolist():
+            daten = quelle.read(info.filename)
+            if info.filename == blatt:
+                text = daten.decode()
+                alt_zelle = re.search(rf'<c r="J{zeile}"([^>]*)><v>{alt}</v></c>', text)
+                assert alt_zelle, "Testvorlage: erwartete Zelle nicht gefunden"
+                daten = text.replace(alt_zelle.group(0), f'<c r="J{zeile}"{alt_zelle.group(1)}><v>{neu}</v></c>').encode()
+            aus.writestr(info, daten)
+    return pfad
+
+
+@pytest.fixture
+def standard_danach():
+    yield
+    pe.verwende_vorlage(None)
+
+
+def test_eigene_vorlage_wird_fuer_die_planung_verwendet(tmp_path, standard_danach):
+    # Stammdaten Zeile 816: 100326800 an CC1 = 900 -> in der eigenen Vorlage 950
+    pfad = _vorlage_mit_fuellmenge(tmp_path, 816, 900, 950)
+    assert pe.pruefe_vorlage(pfad) == []
+    unterschiede = pe.vorlage_unterschiede(pfad)
+    assert len(unterschiede) == 1
+    assert unterschiede.iloc[0][["Abladestelle", "Norm-Nr", "bisher", "jetzt"]].tolist() == ["CC1", 100326800, 900, 950]
+    assert pe.VORLAGE_DATEI == pe.STANDARD_VORLAGE                   # Vergleich aendert die aktive Vorlage nicht
+    pe.verwende_vorlage(pfad)
+    assert pe._fuellmenge(100326800, "CC1") == 950
+    positionen = _positionen([(100326800, "CC1", "2026-11-04", 9000)])
+    inhalt, _, _ = pe.erstelle_planungsdatei(positionen, _bestand({100326800: 100000}), _zugang([]), PLANUNG,
+                                             stichtag=STICHTAG)
+    ws = openpyxl.load_workbook(io.BytesIO(inhalt))["Almanca"]
+    assert [ws.cell(r, 9).value for r in pe._belegte_zeilen(ws)] == [9500]     # 10 KLT × 950
+    pe.verwende_vorlage(None)
+    assert pe._fuellmenge(100326800, "CC1") == 900
+
+
+def test_unbrauchbare_vorlage_wird_erkannt(tmp_path):
+    kaputt = tmp_path / "kaputt.xlsx"
+    kaputt.write_bytes(b"keine Excel-Datei")
+    assert pe.pruefe_vorlage(kaputt)[0].startswith("Datei lässt sich nicht als Excel lesen")
+    falsch = tmp_path / "falsch.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.title = "Almanca"
+    wb["Almanca"].cell(4, 3, value="Abladestelle")
+    wb.save(falsch)
+    fehler = pe.pruefe_vorlage(falsch)
+    assert "Blatt „Stammdaten“ fehlt" in fehler
+    assert any(f.startswith("Blatt „Almanca“: in Spalte C (Zeile 4) muss „Lagerort“ stehen") for f in fehler)

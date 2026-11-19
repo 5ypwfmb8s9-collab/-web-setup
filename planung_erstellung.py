@@ -89,10 +89,12 @@ geben, falls nicht.
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import io
 import math
 import re
+import tempfile
 import zipfile
 from copy import copy
 from pathlib import Path
@@ -299,6 +301,87 @@ def _lade_fuellmenge_je_ort() -> dict:
 
 
 _FUELLMENGE_JE_ORT = _lade_fuellmenge_je_ort()
+
+
+# --- Eigene Planungsvorlage (Upload im Reiter Planung) --------------------------
+# Standard ist die Vorlage im Repository. Wird im Reiter eine eigene Vorlage
+# hochgeladen, wird die Planung mit ihr erstellt: Stammdaten, Füllmengen,
+# Paletten, Werke UND die Excel-Datei selbst (Formeln, Layout) kommen dann
+# aus dieser Datei.
+
+STANDARD_VORLAGE = VORLAGE_DATEI
+PFLICHT_BLAETTER = ("Almanca", "DHL UPS", "Rückstände", "Stammdaten", "Werke", "Maliteslimalan",
+                    "SAP Format Neu (Endtabelle)", "Almanca Hilfsdaten")
+PFLICHT_STAMMDATEN_SPALTEN = ("Lagerort", "Norm NR.", "Füllmenge", "Anzahl Pro Lage", "Anzahl ", "Paletten", "KLT Art")
+# Kopfzeile (Zeile 4) der Eingabeblaetter: Spalte -> erwarteter Kopf
+PFLICHT_KOPF = {SPALTE_LAGERORT: "Lagerort", SPALTE_NORM_NR: "Norm NR.", SPALTE_MENGE: "Menge",
+                SPALTE_FUELLMENGE: "Füllmenge", SPALTE_LAGERAUFTRAG: "Lagerauftrag", SPALTE_LIEFERSCHEIN: "Lieferschein"}
+
+
+def pruefe_vorlage(pfad) -> list[str]:
+    """Kann die Planung mit dieser Vorlage erstellt werden? Rueckgabe: Liste
+    der Probleme (leer = in Ordnung). Geprueft werden die Blaetter, die das
+    Programm braucht, die Spalten in "Stammdaten" und die Kopfzeile der
+    Eingabeblaetter (Spalten duerfen nicht verschoben sein)."""
+    try:
+        xl = pd.ExcelFile(pfad)
+    except Exception as exc:   # keine/beschaedigte Excel-Datei
+        return [f"Datei lässt sich nicht als Excel lesen ({exc})"]
+    fehler = [f"Blatt „{b}“ fehlt" for b in PFLICHT_BLAETTER if b not in xl.sheet_names]
+    if "Stammdaten" in xl.sheet_names:
+        spalten = set(pd.read_excel(xl, sheet_name="Stammdaten", nrows=0).columns)
+        fehler += [f"Blatt „Stammdaten“: Spalte „{s.strip()}“ fehlt" for s in PFLICHT_STAMMDATEN_SPALTEN
+                   if s not in spalten]
+    for blatt in ("Almanca", "DHL UPS", "Rückstände"):
+        if blatt not in xl.sheet_names:
+            continue
+        kopf = pd.read_excel(xl, sheet_name=blatt, header=None, nrows=ERSTE_DATENZEILE - 1)
+        for spalte, name in PFLICHT_KOPF.items():
+            wert = kopf.iat[ERSTE_DATENZEILE - 2, spalte - 1] if kopf.shape[1] >= spalte and len(kopf) >= ERSTE_DATENZEILE - 1 else None
+            if str(wert).strip() != name:
+                buchstabe = openpyxl.utils.get_column_letter(spalte)
+                fehler.append(f"Blatt „{blatt}“: in Spalte {buchstabe} (Zeile {ERSTE_DATENZEILE - 1}) "
+                              f"muss „{name}“ stehen, steht „{'' if pd.isna(wert) else wert}“")
+    return fehler
+
+
+def verwende_vorlage(pfad=None) -> None:
+    """Planungsvorlage wechseln (None = Standard). Laedt alle Referenzdaten
+    (Füllmengen, Paletten, KLT-Art, Werke) neu - auch die gemeinsame
+    Füllmenge je Artikel in bestand_logik."""
+    global VORLAGE_DATEI, _PALETTENSPEZIFIKATION, _KLT_ART_STAMM, _KLT_ART_SAP, _WERKE, _FUELLMENGE_JE_ORT
+    pfad = Path(pfad) if pfad else STANDARD_VORLAGE
+    if pfad == VORLAGE_DATEI:
+        return
+    VORLAGE_DATEI = pfad
+    bestand_logik.VORLAGE_DATEI = pfad
+    bestand_logik.FUELLMENGE_JE_ARTIKEL = bestand_logik.lade_fuellmenge_je_artikel()
+    _PALETTENSPEZIFIKATION = _lade_palettenspezifikation()
+    _KLT_ART_STAMM, _KLT_ART_SAP = _lade_klt_art()
+    _WERKE = _lade_werke()
+    _FUELLMENGE_JE_ORT = _lade_fuellmenge_je_ort()
+
+
+def vorlage_unterschiede(pfad) -> pd.DataFrame:
+    """Füllmengen, die in der Vorlage pfad anders sind als in der Standardvorlage
+    (je Abladestelle aus Stammdaten, je Artikel aus Almanca Hilfsdaten)."""
+    aktiv = VORLAGE_DATEI
+    verwende_vorlage(None)
+    ort_alt, art_alt = dict(_FUELLMENGE_JE_ORT), dict(bestand_logik.FUELLMENGE_JE_ARTIKEL)
+    verwende_vorlage(pfad)
+    ort_neu, art_neu = dict(_FUELLMENGE_JE_ORT), dict(bestand_logik.FUELLMENGE_JE_ARTIKEL)
+    verwende_vorlage(aktiv)
+    zeilen = []
+    for quelle, alt, neu in (("je Abladestelle (Stammdaten)", ort_alt, ort_neu),
+                             ("je Artikel (Almanca Hilfsdaten)", art_alt, art_neu)):
+        for schluessel in sorted(set(alt) | set(neu), key=str):
+            a, n = alt.get(schluessel), neu.get(schluessel)
+            if a == n:
+                continue
+            ort, norm = schluessel if isinstance(schluessel, tuple) else ("", schluessel)
+            zeilen.append({"Füllmenge": quelle, "Abladestelle": ort, "Norm-Nr": norm,
+                           "bisher": a, "jetzt": n})
+    return pd.DataFrame(zeilen, columns=["Füllmenge", "Abladestelle", "Norm-Nr", "bisher", "jetzt"])
 
 
 def _fuellmenge(norm_nr, lagerort=None) -> float:
@@ -1396,6 +1479,49 @@ def _render_artikel_pruefen(daten: dict, planungsdatum) -> None:
 
 # --- Streamlit-Oberflaeche ---------------------------------------------------
 
+def _render_vorlage_auswahl() -> str:
+    """Upload einer eigenen Planungsvorlage. Rueckgabe: Kennung der aktiven
+    Vorlage ("standard" oder Pruefsumme der hochgeladenen Datei)."""
+    with st.expander("📄 Planungsvorlage – eigene Vorlage verwenden",
+                     expanded=st.session_state.get("planung_vorlage_upload") is not None):
+        st.caption(
+            "Standard ist die Planungsvorlage in DISPO PRO. Lädst du hier deine aktuelle Vorlage hoch, wird die "
+            "Planung mit ihr erstellt: Füllmengen (Stammdaten je Abladestelle und Almanca Hilfsdaten), Paletten, "
+            "Werke, Formeln und Layout kommen dann aus deiner Datei. Blattnamen und die Spalten der Eingabeblätter "
+            "müssen gleich bleiben. Die Vorlage gilt, bis du sie hier entfernst oder die App neu startet – "
+            "dauerhaft: Datei dispo_dashboard/planung_vorlage.xlsx in GitHub ersetzen."
+        )
+        datei = st.file_uploader("Planungsvorlage (.xlsx)", type=["xlsx"], key="planung_vorlage_upload")
+        if datei is None:
+            verwende_vorlage(None)
+            st.caption("Aktiv: Standardvorlage aus DISPO PRO.")
+            return "standard"
+        inhalt = datei.getvalue()
+        kennung = hashlib.sha1(inhalt).hexdigest()[:12]
+        pfad = Path(tempfile.gettempdir()) / f"planung_vorlage_{kennung}.xlsx"
+        if not pfad.exists():
+            pfad.write_bytes(inhalt)
+        fehler = pruefe_vorlage(pfad)
+        if fehler:
+            verwende_vorlage(None)
+            st.error("Diese Vorlage kann nicht verwendet werden – die Planung wird mit der Standardvorlage "
+                     "erstellt:\n\n" + "\n".join(f"- {f}" for f in fehler))
+            return "standard"
+        if st.session_state.get("planung_vorlage_kennung") != kennung:
+            st.session_state["planung_vorlage_unterschiede"] = vorlage_unterschiede(pfad)
+            st.session_state["planung_vorlage_kennung"] = kennung
+        verwende_vorlage(pfad)
+        unterschiede = st.session_state["planung_vorlage_unterschiede"]
+        st.success(f"Aktiv: deine Vorlage „{datei.name}“ – die Planung wird mit ihr erstellt.")
+        if unterschiede.empty:
+            st.caption("Füllmengen gleich wie in der Standardvorlage.")
+        else:
+            st.markdown(f"**{len(unterschiede)} Füllmengen anders als in der Standardvorlage:**")
+            st.dataframe(unterschiede, hide_index=True, use_container_width=True,
+                         height=min(38 + 35 * len(unterschiede), 400))
+    return kennung
+
+
 def render_planung_tab() -> None:
     st.title("Planung Erstellung")
     st.markdown(
@@ -1430,6 +1556,8 @@ def render_planung_tab() -> None:
         "Mix-Paletten stehen mit Typ (N), Anzahl (Q) und Erklärung (Z) in der Datei."
     )
 
+    vorlage_kennung = _render_vorlage_auswahl()
+
     daten = st.session_state.get("dispo_daten")
     if not daten:
         st.info("Bitte zuerst im Dashboard Dispo SAP-Exporte hochladen.")
@@ -1450,10 +1578,10 @@ def render_planung_tab() -> None:
         st.session_state["planung_datei"] = inhalt
         st.session_state["planung_kennzahlen"] = kennzahlen
         st.session_state["planung_rueckstand_anzeige"] = rueckstand_anzeige
-        st.session_state["planung_erstellt_fuer"] = planungsdatum
+        st.session_state["planung_erstellt_fuer"] = (planungsdatum, vorlage_kennung)
 
     kennzahlen = st.session_state.get("planung_kennzahlen")
-    if not kennzahlen or st.session_state.get("planung_erstellt_fuer") != planungsdatum:
+    if not kennzahlen or st.session_state.get("planung_erstellt_fuer") != (planungsdatum, vorlage_kennung):
         st.divider()
         _render_artikel_pruefen(daten, planungsdatum)
         _render_vorziehen(daten)
